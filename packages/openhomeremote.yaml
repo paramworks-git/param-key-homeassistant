@@ -1,0 +1,1073 @@
+# PARAM KEY: Home Assistant side (protocol: docs/protocol.md in param-key-firmware).
+#
+# Install: copy or symlink into the HA config's packages/ directory. Needs the
+# bridge adopted in ESPHome with "Allow the device to perform Home Assistant
+# actions" turned on. The bridge's device name is ohr-bridge, so its actions are
+# esphome.ohr_bridge_*.
+#
+# Modes (input_select.ohr_mode, hold home on the remote to pick one):
+#   Media    keys follow sensor.remote_media_context (idle/shield/tv/pc/music).
+#            Hold settings (or tap it when idle or on music) for the Source menu:
+#            OK picks a source, left/right change the sound mode, back closes.
+#            Output (with Roon): left/right pick a Roon zone, OK moves the queue
+#            there and the music keys follow it.
+#   Devices  list of entities labelled "remote" (light, fan, cover, humidifier,
+#            climate). Scenes and scripts with that label become the hotkeys.
+#            OK or right on a humidifier or thermostat opens its detail screen:
+#            up/down pick a setting, left/right change it, back closes.
+#   Settings the remote's own: brightness, screen off and sleep timeouts
+#            (up/down pick, left/right change; sent to the remote at once).
+#
+# Key map: `keymap` below is data. Each context maps key names to an entry:
+#   atv: CMD        Android TV remote command (Shield)
+#   app: ACTIVITY   launch an app on the Shield (package name or URL)
+#   lg: BUTTON      LG webOS button
+#   source: NAME    Denon input
+#   sound: NAME     Denon sound mode
+#   roon: play      resume Roon on the AVR's zone (devices.roon), waking the AVR
+#   player: toggle|previous|next|stop   the music player: the Roon zone picked
+#                   in the Source menu's Output row, or HEOS when only it plays.
+#                   toggle wakes a Roon zone that's off and resumes its queue.
+#   script: NAME    run script.NAME
+#   action/target/data   any HA action
+#   list: up|down|toggle|more|less, hot: N, lights_off   Devices mode
+#   detail: more|less|select|close                      detail screen
+#   setting: more|less                                  Settings mode
+#   menu: open|close|more|less|select                   Source menu
+# Optional per entry: label (hotkey text on screen), events (which key events
+# trigger it), hold (another entry, run when the key is held; the entry itself
+# then acts on tap). By default the arrows and volume act on press and repeat;
+# home, settings, power and the hotkeys act on tap (so hold is free); other keys
+# act on press. Holding a hotkey shows what it does instead of running it.
+# atv entries take hold_secs for a long press.
+# Entries in `common` apply in every context that doesn't override the key, and
+# play/rew/fwd/stop fall back to the current media context's (e.g. in Devices).
+# Avoid on/off/yes/no as YAML keys: they parse as booleans.
+
+input_select:
+  ohr_mode:
+    name: Remote mode
+    icon: mdi:remote
+    options:
+      - Media
+      - Devices
+      - Settings
+
+input_boolean:
+  ohr_picker:
+    name: Remote mode picker open
+    icon: mdi:format-list-bulleted
+  ohr_sources:
+    name: Remote source menu open
+    icon: mdi:video-input-hdmi
+
+input_number:
+  ohr_cursor:
+    name: Remote devices cursor
+    min: 0
+    max: 99
+    step: 1
+    mode: box
+  ohr_picker_cursor:
+    name: Remote mode picker cursor
+    min: 0
+    max: 9
+    step: 1
+    mode: box
+  ohr_detail_cursor:
+    name: Remote detail cursor
+    min: 0
+    max: 9
+    step: 1
+    mode: box
+  ohr_menu_cursor:
+    name: Remote source menu cursor
+    min: 0
+    max: 9
+    step: 1
+    mode: box
+  # Remote settings (Settings mode), sent to the remote by ohr_config.
+  ohr_brightness:
+    name: Remote brightness
+    icon: mdi:brightness-6
+    min: 10
+    max: 100
+    step: 10
+    unit_of_measurement: "%"
+  ohr_screen_off:
+    name: Remote screen off after
+    icon: mdi:monitor-off
+    min: 5
+    max: 60
+    step: 5
+    unit_of_measurement: s
+  ohr_sleep_after:
+    name: Remote sleep after
+    icon: mdi:sleep
+    min: 10
+    max: 300
+    step: 10
+    unit_of_measurement: s
+
+input_text:
+  # Entity whose detail screen is open in Devices mode, empty when none.
+  ohr_detail:
+    name: Remote detail entity
+    max: 255
+  # Roon zone the music keys control, and the one picked in the Output row
+  # before OK (empty: the same zone).
+  ohr_roon_zone:
+    name: Remote Roon zone
+    max: 255
+  ohr_roon_output:
+    name: Remote Roon output pick
+    max: 255
+
+template:
+  - sensor:
+      - name: Remote media context
+        unique_id: ohr_media_context
+        icon: mdi:remote-tv
+        state: >
+          {% set avr = 'media_player.avr' %}
+          {% set src = state_attr(avr, 'source') %}
+          {% set tv_on = is_state('media_player.tv', 'on') %}
+          {% if is_state(avr, 'off') and not tv_on %}idle
+          {% elif src == 'SHIELD' %}shield
+          {% elif src == 'TV Audio' %}tv
+          {% elif src == 'PC' %}pc
+          {% elif is_state('binary_sensor.avr_source_heos', 'on') %}music
+          {% elif tv_on %}tv
+          {% else %}idle{% endif %}
+  # Battery log: the remote sends hello on every wake and on each battery reading
+  # (every 60 s while awake). state_class keeps long-term statistics, so the
+  # discharge curve survives the recorder's purge.
+  - triggers:
+      - trigger: event
+        event_type: esphome.openhomeremote_hello
+    sensor:
+      - name: Remote battery
+        unique_id: ohr_remote_battery
+        device_class: battery
+        state_class: measurement
+        unit_of_measurement: "%"
+        # A hello sent before the first reading says unknown (-1): keep the last value.
+        state: >
+          {% set b = trigger.event.data.battery | int(-1) %}
+          {{ b if b >= 0 else this.state }}
+        attributes:
+          remote: "{{ trigger.event.data.remote }}"
+          firmware: "{{ trigger.event.data.firmware }}"
+          # Per-remote readings, so several remotes on one bridge can be told apart
+          # (the screen state is still shared between them). Keyed by the label
+          # below, or the MAC for an unlabelled remote.
+          remotes: >
+            {% set labels = {
+                 '02:00:00:00:00:01': 'Me',
+                 '02:00:00:00:00:03': 'Copy 1',
+                 '02:00:00:00:00:02': 'Copy 2'} %}
+            {% set mac = labels.get(trigger.event.data.remote, trigger.event.data.remote) %}
+            {% set old = this.attributes.get('remotes') or {} %}
+            {% set prev = old.get(mac, {}) %}
+            {% set b = trigger.event.data.battery | int(-1) %}
+            {% set entry = {
+                 'mac': trigger.event.data.remote,
+                 'battery': b if b >= 0 else prev.get('battery'),
+                 'charging': trigger.event.data.charging in [true, 'true'],
+                 'rssi': trigger.event.data.rssi,
+                 'firmware': trigger.event.data.firmware,
+                 'seen': now().isoformat(timespec='seconds')} %}
+            {{ dict(old.items() | rejectattr(0, 'eq', mac) | rejectattr(0, 'in', labels) | list
+                    + [(mac, entry)]) }}
+      - name: Remote signal
+        unique_id: ohr_remote_rssi
+        device_class: signal_strength
+        state_class: measurement
+        unit_of_measurement: dBm
+        state: "{{ trigger.event.data.rssi }}"
+      # Why the remote last woke (reset, ext1 = key or accelerometer), for
+      # diagnosing sleep. Older firmware doesn't send it.
+      - name: Remote last wake
+        unique_id: ohr_remote_wake
+        icon: mdi:sleep-off
+        state: "{{ trigger.event.data.get('wake') or this.state }}"
+        attributes:
+          wake_mask: "{{ trigger.event.data.get('wake_mask') or this.attributes.get('wake_mask') }}"
+          accelerometer: >
+            {% set d = trigger.event.data.get('diag', -1) | int(-1) %}
+            {{ this.attributes.get('accelerometer') if d < 0 else ('found' if d % 2 else 'missing') }}
+          acc_int_at_boot: >
+            {% set d = trigger.event.data.get('diag', -1) | int(-1) %}
+            {{ this.attributes.get('acc_int_at_boot') if d < 0 else ('high' if (d // 2) % 2 else 'low') }}
+    binary_sensor:
+      - name: Remote charging
+        unique_id: ohr_remote_charging
+        device_class: battery_charging
+        state: "{{ trigger.event.data.charging in [true, 'true'] }}"
+
+automation:
+  - id: ohr_key
+    alias: Open Home Remote key
+    mode: queued
+    max: 30
+    triggers:
+      - trigger: event
+        event_type: esphome.openhomeremote_key
+    actions:
+      - action: script.ohr_dispatch
+        data:
+          remote: "{{ trigger.event.data.remote }}"
+          key: "{{ trigger.event.data.key }}"
+          type: "{{ trigger.event.data.type }}"
+
+  - id: ohr_render
+    alias: Open Home Remote screen update
+    mode: restart
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: esphome.openhomeremote_hello
+      # The bridge showed "Home Assistant offline" and HA is back.
+      - trigger: event
+        event_type: esphome.openhomeremote_bridge_online
+      - trigger: state
+        entity_id:
+          - input_select.ohr_mode
+          - input_boolean.ohr_picker
+          - input_number.ohr_cursor
+          - input_number.ohr_picker_cursor
+          - input_number.ohr_detail_cursor
+          - input_text.ohr_detail
+          - input_boolean.ohr_sources
+          - input_number.ohr_menu_cursor
+          - input_number.ohr_brightness
+          - input_number.ohr_screen_off
+          - input_number.ohr_sleep_after
+          - input_text.ohr_roon_zone
+          - input_text.ohr_roon_output
+          - sensor.remote_media_context
+      - trigger: state
+        entity_id: media_player.avr
+        attribute: volume_level
+      - trigger: state
+        entity_id: media_player.avr
+        attribute: is_volume_muted
+      - trigger: state
+        entity_id: media_player.avr
+        attribute: sound_mode
+      - trigger: state
+        entity_id: media_player.shield
+        attribute: app_name
+      - trigger: state
+        entity_id: media_player.tv
+        attribute: source
+      - trigger: state
+        entity_id: media_player.avr_heos
+        attribute: media_title
+      - trigger: state
+        entity_id: media_player.roon_zone
+        attribute: media_title
+    actions:
+      # Debounce bursts (e.g. volume repeat) into one screen update.
+      - delay:
+          milliseconds: 150
+      - action: script.ohr_render
+
+  # Keep the track time ticking while the remote is awake on the music screen
+  # (it sends hello at least once a minute while awake).
+  - id: ohr_track_time
+    alias: Open Home Remote track time
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        seconds: "/1"
+    conditions:
+      - condition: template
+        value_template: >
+          {% set z = states('input_text.ohr_roon_zone') %}
+          {% set players = [z if z.startswith('media_player.') else 'media_player.roon_zone', 'media_player.avr_heos'] %}
+          {% set sig = states.sensor.remote_signal %}
+          {{ is_state('input_select.ohr_mode', 'Media') and is_state('input_boolean.ohr_picker', 'off')
+             and is_state('input_boolean.ohr_sources', 'off') and is_state('sensor.remote_media_context', 'music')
+             and players | select('is_state', 'playing') | map('state_attr', 'media_duration') | select('number') | list
+             and sig is not none and (now() - sig.last_reported).total_seconds() < 70 }}
+    actions:
+      - action: script.ohr_render
+
+  # The bridge caches the settings and hands them to each remote on wake.
+  - id: ohr_config
+    alias: Open Home Remote settings
+    mode: restart
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: esphome.openhomeremote_bridge_online
+      - trigger: state
+        entity_id:
+          - input_number.ohr_brightness
+          - input_number.ohr_screen_off
+          - input_number.ohr_sleep_after
+    actions:
+      - action: esphome.ohr_bridge_set_config
+        data:
+          brightness: "{{ states('input_number.ohr_brightness') | int(100) }}"
+          backlight_seconds: "{{ states('input_number.ohr_screen_off') | int(15) }}"
+          sleep_seconds: "{{ states('input_number.ohr_sleep_after') | int(30) }}"
+
+  # A Source menu left open would greet the next pickup: close it once idle.
+  - id: ohr_menu_timeout
+    alias: Open Home Remote close source menu
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.ohr_sources
+        to: "on"
+        for: "00:01:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ohr_sources
+
+script:
+  ohr_dispatch:
+    alias: Open Home Remote key dispatch
+    icon: mdi:remote
+    mode: queued
+    max: 30
+    fields:
+      remote:
+        description: MAC of the remote
+      key:
+        description: Key name (docs/protocol.md)
+        example: vol_up
+      type:
+        description: Key event (press, tap, hold, repeat, release)
+        example: press
+    variables:
+      devices: &ohr_devices
+        atv: remote.shield
+        lg: media_player.tv
+        avr: media_player.avr
+        heos: media_player.avr_heos
+        # Roon: the zone on the AVR, and the zones the Output row offers.
+        roon: media_player.roon_zone
+        roon_zones: "{{ integration_entities('roon') | select('match', '^media_player[.]') | list }}"
+      keymap: &ohr_keymap
+        common:
+          vol_up: {action: media_player.volume_up, target: {entity_id: media_player.avr}}
+          vol_down: {action: media_player.volume_down, target: {entity_id: media_player.avr}}
+          mute:
+            action: media_player.volume_mute
+            target: {entity_id: media_player.avr}
+            data:
+              is_volume_muted: "{{ not state_attr('media_player.avr', 'is_volume_muted') }}"
+          power: {script: media_center_off}
+        idle:
+          power: {script: shield_on_and_source}
+          settings: {menu: open}
+          play: {player: toggle}
+          h1: {label: Shield, script: shield_on_and_source}
+          h2: {label: TV, source: TV Audio}
+          h3: {label: PC, source: PC}
+          h4: {label: Music, roon: play}
+        shield:
+          up: {atv: DPAD_UP}
+          down: {atv: DPAD_DOWN}
+          left: {atv: DPAD_LEFT}
+          right: {atv: DPAD_RIGHT}
+          ok: {atv: DPAD_CENTER, hold: {atv: DPAD_CENTER, hold_secs: 1}}
+          back: {atv: BACK}
+          home: {atv: HOME}
+          settings: {atv: SETTINGS}
+          play: {atv: MEDIA_PLAY_PAUSE}
+          rew: {atv: MEDIA_REWIND}
+          fwd: {atv: MEDIA_FAST_FORWARD}
+          stop: {atv: MEDIA_STOP}
+          h1: {label: Plex, app: com.plexapp.android}
+          h2: {label: YTM, app: "https://music.youtube.com"}
+          h3: {label: Netflix, app: com.netflix.ninja}
+          h4: {label: Tidal, app: "tidal://"}
+        tv:
+          up: {lg: UP}
+          down: {lg: DOWN}
+          left: {lg: LEFT}
+          right: {lg: RIGHT}
+          ok: {lg: ENTER}
+          back: {lg: BACK}
+          home: {lg: HOME}
+          settings: {lg: MENU}
+          play: {action: media_player.media_play_pause, target: {entity_id: media_player.tv}}
+          rew: {lg: REWIND}
+          fwd: {lg: FASTFORWARD}
+          stop: {lg: STOP}
+          h1: {label: AMusic, script: apple_music_tv}
+          h2: {label: Shield, script: shield_on_and_source}
+          h3: {label: PC, source: PC}
+          h4: {label: Music, roon: play}
+        pc:
+          up: {lg: UP}
+          down: {lg: DOWN}
+          left: {lg: LEFT}
+          right: {lg: RIGHT}
+          ok: {lg: ENTER}
+          back: {lg: BACK}
+          settings: {lg: MENU}
+          h1: {label: TV on, action: button.press, target: {entity_id: button.pc_wake_on_lan}}
+          h2: {label: TV off, action: media_player.turn_off, target: {entity_id: media_player.tv}}
+          h3: {label: Shield, script: shield_on_and_source}
+          h4: {label: Music, roon: play}
+        music:
+          play: {player: toggle}
+          rew: {player: previous}
+          fwd: {player: next}
+          stop: {player: stop}
+          h1: {label: Pure, sound: PURE DIRECT}
+          h2: {label: Stereo, sound: STEREO}
+          h3: {label: Direct, sound: DIRECT}
+          h4: {label: DTS, sound: DTS SURROUND}
+          settings: {menu: open}
+        devices:
+          up: {list: up}
+          down: {list: down}
+          ok: {list: toggle}
+          right: {list: more}
+          left: {list: less}
+          h1: {hot: 0}
+          h2: {hot: 1}
+          h3: {hot: 2}
+          h4: {hot: 3}
+          power: {lights_off: true}
+        detail:
+          up: {list: up}
+          down: {list: down}
+          left: {detail: less}
+          right: {detail: more}
+          ok: {detail: select}
+          back: {detail: close}
+        sources:
+          up: {list: up}
+          down: {list: down}
+          left: {menu: less}
+          right: {menu: more}
+          ok: {menu: select}
+          back: {menu: close}
+          settings: {menu: close}
+        settings:
+          up: {list: up}
+          down: {list: down}
+          left: {setting: less}
+          right: {setting: more}
+        picker:
+          up: {list: up}
+          down: {list: down}
+          ok: {script: ohr_pick_mode}
+          back: {action: input_boolean.turn_off, target: {entity_id: input_boolean.ohr_picker}}
+      # Source menu: sources in order (ctx marks the current one), then one
+      # Sound row that cycles through `sounds`, then Output (Roon zones).
+      media_menu: &ohr_media_menu
+        sources:
+          - {label: Shield, ctx: shield, script: shield_on_and_source}
+          - {label: TV, ctx: tv, source: TV Audio}
+          - {label: PC, ctx: pc, source: PC}
+          - {label: Music, ctx: music, roon: play}
+        sounds: [PURE DIRECT, STEREO, DIRECT, DTS SURROUND]
+      roon_zone: &ohr_roon_zone >
+        {% set z = states('input_text.ohr_roon_zone') %}
+        {{ z if z in devices.roon_zones else devices.roon }}
+      roon_output: &ohr_roon_output >
+        {% set z = states('input_text.ohr_roon_output') %}
+        {{ z if z in devices.roon_zones else roon_zone }}
+      # What the music keys and screen follow: the Roon zone, or HEOS when it
+      # plays on its own (HEOS also mirrors Roon on the AVR).
+      player: &ohr_player >
+        {% if roon_zone and states(roon_zone) in ['playing', 'paused'] %}{{ roon_zone }}
+        {% elif states(devices.heos) in ['playing', 'paused'] or not roon_zone %}{{ devices.heos }}
+        {% else %}{{ roon_zone }}{% endif %}
+      modes: "{{ state_attr('input_select.ohr_mode', 'options') }}"
+      picker: "{{ is_state('input_boolean.ohr_picker', 'on') }}"
+      detail: "{{ states('input_text.ohr_detail') | replace('unknown', '') }}"
+      ctx: &ohr_ctx >
+        {% if picker %}picker
+        {% elif is_state('input_select.ohr_mode', 'Devices') %}{{ 'detail' if detail else 'devices' }}
+        {% elif is_state('input_select.ohr_mode', 'Settings') %}settings
+        {% elif is_state('input_boolean.ohr_sources', 'on') %}sources
+        {% else %}{{ states('sensor.remote_media_context') }}{% endif %}
+      settings_rows: &ohr_settings_rows
+        - {entity: input_number.ohr_brightness, label: Brightness, unit: "%"}
+        - {entity: input_number.ohr_screen_off, label: Screen off after, unit: " s"}
+        - {entity: input_number.ohr_sleep_after, label: Sleep after, unit: " s"}
+      menu_rows: &ohr_menu_rows >
+        {% set here = states('sensor.remote_media_context') %}
+        {% set ns = namespace(rows=[]) %}
+        {% for s in media_menu.sources %}
+          {% set ns.rows = ns.rows + [{'k': 'source', 'i': loop.index0, 'label': s.label, 'current': s.ctx == here}] %}
+        {% endfor %}
+        {% set ns.rows = ns.rows + [{'k': 'sound', 'label': 'Sound', 'value': state_attr('media_player.avr', 'sound_mode') or '-'}] %}
+        {% if devices.roon_zones | reject('is_state', 'unavailable') | list %}
+          {% set ns.rows = ns.rows + [{'k': 'output', 'label': 'Output', 'value': state_attr(roon_output, 'friendly_name') or roon_output,
+                                       'pending': roon_output != roon_zone}] %}
+        {% endif %}
+        {{ ns.rows }}
+      dev_list: >
+        {{ label_entities('remote') | reject('match', '^(scene|script)\.') | list
+           | expand | sort(attribute='name') | map(attribute='entity_id') | list }}
+      hot_list: >
+        {{ label_entities('remote') | select('match', '^(scene|script)\.') | list
+           | expand | sort(attribute='name') | map(attribute='entity_id') | list }}
+      # Rows of the detail screen: k says how left/right change it.
+      detail_rows: &ohr_detail_rows >
+        {% set e = detail %}
+        {% set dom = e.split('.')[0] if e else '' %}
+        {% set ns = namespace(rows=[]) %}
+        {% if dom == 'humidifier' %}
+          {% set ns.rows = [{'k': 'power', 'label': 'Power', 'value': states(e)},
+                            {'k': 'humidity', 'label': 'Target', 'value': state_attr(e, 'humidity') ~ '%'}] %}
+          {% if state_attr(e, 'available_modes') %}
+            {% set ns.rows = ns.rows + [{'k': 'mode', 'label': 'Mode', 'value': state_attr(e, 'mode')}] %}
+          {% endif %}
+        {% elif dom == 'climate' %}
+          {% set ns.rows = [{'k': 'hvac', 'label': 'Mode', 'value': states(e) | replace('_', '/')}] %}
+          {% if state_attr(e, 'temperature') is number %}
+            {% set ns.rows = ns.rows + [{'k': 'temp', 'label': 'Target', 'value': state_attr(e, 'temperature') ~ '°'}] %}
+          {% elif state_attr(e, 'target_temp_low') is number %}
+            {% set ns.rows = ns.rows + [{'k': 'low', 'label': 'Heat to', 'value': state_attr(e, 'target_temp_low') ~ '°'},
+                                        {'k': 'high', 'label': 'Cool to', 'value': state_attr(e, 'target_temp_high') ~ '°'}] %}
+          {% endif %}
+          {% if state_attr(e, 'humidity') is number %}
+            {% set ns.rows = ns.rows + [{'k': 'humidity', 'label': 'Humidity', 'value': state_attr(e, 'humidity') | int ~ '%'}] %}
+          {% endif %}
+          {% if state_attr(e, 'fan_modes') %}
+            {% set ns.rows = ns.rows + [{'k': 'fan', 'label': 'Fan', 'value': state_attr(e, 'fan_mode')}] %}
+          {% endif %}
+          {% if state_attr(e, 'preset_modes') %}
+            {% set ns.rows = ns.rows + [{'k': 'preset', 'label': 'Preset', 'value': state_attr(e, 'preset_mode')}] %}
+          {% endif %}
+        {% endif %}
+        {{ ns.rows }}
+      hotkey_keys: [h1, h2, h3, h4]
+      # Media keys outside Media mode (Devices, Settings, the Source menu) act
+      # on whatever is playing, like volume does.
+      base: >
+        {% set m = keymap.get(ctx, {}) %}
+        {% set media = keymap.get(states('sensor.remote_media_context'), {}) %}
+        {{ m.get(key) or ({} if ctx == 'picker'
+           else keymap.common.get(key) or (media.get(key) if key in ['play', 'rew', 'fwd', 'stop'] else none)) or {} }}
+      # What a hold runs: the entry's hold, a hotkey preview, or the Source menu.
+      entry: >
+        {% if type != 'hold' %}{{ base }}
+        {% elif key == 'settings' and ctx not in ['picker', 'devices', 'detail', 'settings'] %}
+          {{ {'menu': 'close' if ctx == 'sources' else 'open', 'events': ['hold']} }}
+        {% elif base.hold is defined %}{{ dict(base.hold, events=['hold']) }}
+        {% elif key in hotkey_keys and base %}{{ {'preview': base, 'events': ['hold']} }}
+        {% else %}{{ base }}{% endif %}
+      events: >
+        {% if entry.events is defined %}{{ entry.events }}
+        {% elif entry.hold is defined %}{{ ['tap'] }}
+        {% elif key in ['up', 'down', 'left', 'right', 'vol_up', 'vol_down'] %}{{ ['press', 'repeat'] }}
+        {% elif key in ['home', 'settings', 'power'] + hotkey_keys %}{{ ['tap'] }}
+        {% else %}{{ ['press'] }}{% endif %}
+      call: >
+        {% set d = devices %}
+        {% if ctx == 'picker' %}
+          {% set n = modes | count %}{% set cur = states('input_number.ohr_picker_cursor') | int(0) %}
+          {% set cursor_entity = 'input_number.ohr_picker_cursor' %}
+        {% elif ctx == 'detail' %}
+          {% set n = detail_rows | count %}{% set cur = states('input_number.ohr_detail_cursor') | int(0) %}
+          {% set cursor_entity = 'input_number.ohr_detail_cursor' %}
+        {% elif ctx == 'settings' %}
+          {% set n = settings_rows | count %}{% set cur = states('input_number.ohr_cursor') | int(0) %}
+          {% set cursor_entity = 'input_number.ohr_cursor' %}
+        {% elif ctx == 'sources' %}
+          {% set n = menu_rows | count %}{% set cur = states('input_number.ohr_menu_cursor') | int(0) %}
+          {% set cursor_entity = 'input_number.ohr_menu_cursor' %}
+        {% else %}
+          {% set n = dev_list | count %}{% set cur = states('input_number.ohr_cursor') | int(0) %}
+          {% set cursor_entity = 'input_number.ohr_cursor' %}
+        {% endif %}
+        {% set sel = dev_list[cur] if ctx == 'devices' and cur < n else none %}
+        {% if entry.preview is defined %}
+          {% set e = entry.preview %}
+          {% if e.hot is defined %}
+            {% set what = state_attr(hot_list[e.hot], 'friendly_name') if e.hot < hot_list | count else 'Nothing' %}
+          {% elif e.app is defined %}{% set what = 'Opens ' ~ e.app ~ ' on the Shield' %}
+          {% elif e.source is defined %}{% set what = 'AVR input ' ~ e.source %}
+          {% elif e.roon is defined %}{% set what = 'Plays Roon on ' ~ (state_attr(d.roon, 'friendly_name') or d.roon) %}
+          {% elif e.sound is defined %}{% set what = 'Sound mode ' ~ e.sound %}
+          {% elif e.script is defined %}{% set what = state_attr('script.' ~ e.script, 'friendly_name') or e.script %}
+          {% elif e.action is defined %}{% set what = e.action ~ ' ' ~ (e.target | default({})).get('entity_id', '') %}
+          {% else %}{% set what = 'Nothing' %}{% endif %}
+          {% set msg = (e.label ~ ': ' if e.label is defined else '') ~ what %}
+          {{ {'action': 'esphome.ohr_bridge_show_message', 'data': {'message': msg, 'seconds': 3}} }}
+        {% elif entry.atv is defined %}
+          {% set data = {'command': entry.atv} %}
+          {% if entry.hold_secs is defined %}{% set data = dict(data, hold_secs=entry.hold_secs) %}{% endif %}
+          {{ {'action': 'remote.send_command', 'target': {'entity_id': d.atv}, 'data': data} }}
+        {% elif entry.app is defined %}
+          {{ {'action': 'remote.turn_on', 'target': {'entity_id': d.atv}, 'data': {'activity': entry.app}} }}
+        {% elif entry.lg is defined %}
+          {{ {'action': 'webostv.button', 'target': {'entity_id': d.lg}, 'data': {'button': entry.lg}} }}
+        {% elif entry.source is defined %}
+          {{ {'action': 'media_player.select_source', 'target': {'entity_id': d.avr}, 'data': {'source': entry.source}} }}
+        {% elif entry.sound is defined %}
+          {{ {'action': 'media_player.select_sound_mode', 'target': {'entity_id': d.avr}, 'data': {'sound_mode': entry.sound}} }}
+        {% elif entry.roon is defined %}
+          {{ {'action': 'script.turn_on', 'target': {'entity_id': 'script.ohr_roon_play'},
+              'data': {'variables': {'zone': d.roon, 'wake': d.avr}}} }}
+        {% elif entry.player is defined %}
+          {% if entry.player != 'toggle' %}
+            {% set act = {'previous': 'media_previous_track', 'next': 'media_next_track', 'stop': 'media_stop'}[entry.player] %}
+            {{ {'action': 'media_player.' ~ act, 'target': {'entity_id': player}} }}
+          {% elif is_state(player, 'playing') %}
+            {{ {'action': 'media_player.media_pause', 'target': {'entity_id': player}} }}
+          {% elif player == roon_zone %}
+            {{ {'action': 'script.turn_on', 'target': {'entity_id': 'script.ohr_roon_play'},
+                'data': {'variables': {'zone': player, 'wake': d.avr if player == d.roon else player}}} }}
+          {% else %}
+            {{ {'action': 'media_player.media_play', 'target': {'entity_id': player}} }}
+          {% endif %}
+        {% elif entry.script is defined %}
+          {{ {'action': 'script.' ~ entry.script} }}
+        {% elif entry.list in ['up', 'down'] and n > 0 %}
+          {% set new = [[cur + (1 if entry.list == 'down' else -1), 0] | max, n - 1] | min %}
+          {{ {'action': 'input_number.set_value', 'target': {'entity_id': cursor_entity}, 'data': {'value': new}} }}
+        {% elif entry.list in ['toggle', 'more'] and sel and sel.split('.')[0] in ['humidifier', 'climate'] %}
+          {{ {'action': 'script.ohr_open_detail', 'data': {'entity': sel}} }}
+        {% elif entry.list == 'toggle' and sel %}
+          {{ {'action': 'homeassistant.toggle', 'target': {'entity_id': sel}} }}
+        {% elif entry.list in ['more', 'less'] and sel %}
+          {% set up = entry.list == 'more' %}
+          {% set domain = sel.split('.')[0] %}
+          {% if domain == 'light' %}
+            {{ {'action': 'light.turn_on', 'target': {'entity_id': sel}, 'data': {'brightness_step_pct': 10 if up else -10}} }}
+          {% elif domain == 'fan' %}
+            {{ {'action': 'fan.increase_speed' if up else 'fan.decrease_speed', 'target': {'entity_id': sel}} }}
+          {% elif domain == 'cover' %}
+            {% set pos = state_attr(sel, 'current_position') | int(0) %}
+            {{ {'action': 'cover.set_cover_position', 'target': {'entity_id': sel}, 'data': {'position': [[pos + (10 if up else -10), 0] | max, 100] | min}} }}
+          {% elif domain == 'media_player' %}
+            {{ {'action': 'media_player.volume_up' if up else 'media_player.volume_down', 'target': {'entity_id': sel}} }}
+          {% else %}{{ {} }}{% endif %}
+        {% elif entry.detail == 'close' %}
+          {{ {'action': 'input_text.set_value', 'target': {'entity_id': 'input_text.ohr_detail'}, 'data': {'value': ''}} }}
+        {% elif entry.detail is defined and cur < n %}
+          {% set e, row = detail, detail_rows[cur] %}
+          {% set up = entry.detail != 'less' %}
+          {% set options = {'mode': 'available_modes', 'hvac': 'hvac_modes', 'fan': 'fan_modes', 'preset': 'preset_modes'} %}
+          {% set step = state_attr(e, 'target_temp_step') or 0.5 %}
+          {% if row.k == 'power' %}
+            {{ {'action': 'homeassistant.toggle', 'target': {'entity_id': e}} }}
+          {% elif row.k in options %}
+            {# Cycle through the entity's options; OK steps forward. #}
+            {% set opts = state_attr(e, options[row.k]) | list %}
+            {% set current = states(e) if row.k == 'hvac' else state_attr(e, {'mode': 'mode', 'fan': 'fan_mode', 'preset': 'preset_mode'}[row.k]) %}
+            {% set i = opts.index(current) if current in opts else -1 %}
+            {% set next = opts[(i + (1 if up else -1)) % (opts | count)] %}
+            {% set act = {'mode': ['humidifier.set_mode', 'mode'], 'hvac': ['climate.set_hvac_mode', 'hvac_mode'],
+                          'fan': ['climate.set_fan_mode', 'fan_mode'], 'preset': ['climate.set_preset_mode', 'preset_mode']}[row.k] %}
+            {{ {'action': act[0], 'target': {'entity_id': e}, 'data': {act[1]: next}} }}
+          {% elif entry.detail == 'select' %}{{ {} }}
+          {% elif row.k == 'humidity' %}
+            {# Humidifiers step 5%; a thermostat's target humidity 1%. #}
+            {% set dom = e.split('.')[0] %}
+            {% set h = state_attr(e, 'humidity') | int(50) + (1 if dom == 'climate' else 5) * (1 if up else -1) %}
+            {% set h = [[h, state_attr(e, 'min_humidity') | int(0)] | max, state_attr(e, 'max_humidity') | int(100)] | min %}
+            {{ {'action': dom ~ '.set_humidity', 'target': {'entity_id': e}, 'data': {'humidity': h}} }}
+          {% elif row.k == 'temp' %}
+            {{ {'action': 'climate.set_temperature', 'target': {'entity_id': e},
+                'data': {'temperature': state_attr(e, 'temperature') + (step if up else -step)}} }}
+          {% elif row.k in ['low', 'high'] %}
+            {# heat_cool needs both ends; keep them at least one step apart. #}
+            {% set lo, hi = state_attr(e, 'target_temp_low'), state_attr(e, 'target_temp_high') %}
+            {% set lo = [lo + (step if up else -step), hi - step] | min if row.k == 'low' else lo %}
+            {% set hi = [hi + (step if up else -step), lo + step] | max if row.k == 'high' else hi %}
+            {{ {'action': 'climate.set_temperature', 'target': {'entity_id': e},
+                'data': {'target_temp_low': lo, 'target_temp_high': hi}} }}
+          {% else %}{{ {} }}{% endif %}
+        {% elif entry.setting is defined and cur < n %}
+          {% set e = settings_rows[cur].entity %}
+          {% set step = state_attr(e, 'step') %}
+          {% set v = states(e) | float(0) + (step if entry.setting == 'more' else -step) %}
+          {% set v = [[v, state_attr(e, 'min')] | max, state_attr(e, 'max')] | min %}
+          {{ {'action': 'input_number.set_value', 'target': {'entity_id': e}, 'data': {'value': v}} }}
+        {% elif entry.menu == 'open' %}
+          {% set i = (menu_rows | selectattr('current', 'defined') | selectattr('current') | map(attribute='i') | list + [0])[0] %}
+          {{ {'action': 'script.ohr_open_menu', 'data': {'cursor': i}} }}
+        {% elif entry.menu == 'close' %}
+          {{ {'action': 'input_boolean.turn_off', 'target': {'entity_id': 'input_boolean.ohr_sources'}} }}
+        {% elif entry.menu is defined and cur < n %}
+          {% set row = menu_rows[cur] %}
+          {% if row.k == 'sound' %}
+            {% set opts = media_menu.sounds %}
+            {% set i = opts.index(row.value) if row.value in opts else -1 %}
+            {% set next = opts[(i + (-1 if entry.menu == 'less' else 1)) % (opts | count)] %}
+            {{ {'action': 'media_player.select_sound_mode', 'target': {'entity_id': d.avr}, 'data': {'sound_mode': next}} }}
+          {% elif row.k == 'output' and entry.menu == 'select' %}
+            {{ {'action': 'script.turn_on', 'target': {'entity_id': 'script.ohr_roon_output'},
+                'data': {'variables': {'source': roon_zone, 'zone': roon_output}}} }}
+          {% elif row.k == 'output' %}
+            {% set opts = devices.roon_zones | reject('is_state', 'unavailable') | list %}
+            {% set i = opts.index(roon_output) if roon_output in opts else -1 %}
+            {% set next = opts[(i + (-1 if entry.menu == 'less' else 1)) % (opts | count)] %}
+            {{ {'action': 'input_text.set_value', 'target': {'entity_id': 'input_text.ohr_roon_output'}, 'data': {'value': next}} }}
+          {% elif entry.menu == 'select' %}
+            {% set s = media_menu.sources[row.i] %}
+            {% if s.script is defined %}{{ {'action': 'script.' ~ s.script} }}
+            {% elif s.roon is defined %}
+              {{ {'action': 'script.turn_on', 'target': {'entity_id': 'script.ohr_roon_play'},
+                  'data': {'variables': {'zone': d.roon, 'wake': d.avr}}} }}
+            {% else %}{{ {'action': 'media_player.select_source', 'target': {'entity_id': d.avr}, 'data': {'source': s.source}} }}{% endif %}
+          {% else %}{{ {} }}{% endif %}
+        {% elif entry.hot is defined and entry.hot < hot_list | count %}
+          {{ {'action': 'homeassistant.turn_on', 'target': {'entity_id': hot_list[entry.hot]}} }}
+        {% elif entry.lights_off is defined %}
+          {% set lights = dev_list | select('match', '^light\.') | list %}
+          {{ {'action': 'light.turn_off', 'target': {'entity_id': lights}} if lights else {} }}
+        {% elif entry.action is defined %}
+          {{ {'action': entry.action, 'target': entry.target | default({}), 'data': entry.data | default({})} }}
+        {% else %}{{ {} }}{% endif %}
+    sequence:
+      - if: "{{ key == 'home' and type == 'hold' }}"
+        then:
+          - if: "{{ picker }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.ohr_picker
+            else:
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.ohr_picker_cursor
+                data:
+                  value: "{{ modes.index(states('input_select.ohr_mode')) if states('input_select.ohr_mode') in modes else 0 }}"
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.ohr_picker
+          - stop: Mode picker toggled
+      - condition: template
+        value_template: "{{ type in events and call.action is defined }}"
+      - action: "{{ call.action }}"
+        target: "{{ call.target | default({}) }}"
+        data: "{{ call.data | default({}) }}"
+        continue_on_error: true
+      # A source or output was picked: back to the media screen.
+      - if: "{{ ctx == 'sources' and entry.menu == 'select' and call.action != 'media_player.select_sound_mode' }}"
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.ohr_sources
+      # Devices mode: entity states changed, so refresh the screen once they settle.
+      - if: >
+          {{ ctx in ['devices', 'detail'] and (entry.list in ['toggle', 'more', 'less']
+             or entry.hot is defined or entry.lights_off is defined
+             or entry.detail in ['more', 'less', 'select']) }}
+        then:
+          - action: script.turn_on
+            target:
+              entity_id: script.ohr_refresh
+
+  ohr_open_detail:
+    alias: Open Home Remote open detail screen
+    icon: mdi:tune-variant
+    fields:
+      entity:
+        description: Entity to show
+    sequence:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.ohr_detail_cursor
+        data:
+          value: 0
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.ohr_detail
+        data:
+          value: "{{ entity }}"
+
+  ohr_open_menu:
+    alias: Open Home Remote open source menu
+    icon: mdi:video-input-hdmi
+    fields:
+      cursor:
+        description: Row to start on (the current source)
+    sequence:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.ohr_menu_cursor
+        data:
+          value: "{{ cursor | int(0) }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.ohr_roon_output
+        data:
+          value: ""
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.ohr_sources
+
+  # Resume Roon on a zone. A zone that's off is woken first through `wake`:
+  # the AVR for its own zone (the zone comes up with it), else the zone itself.
+  ohr_roon_play:
+    alias: Open Home Remote play Roon
+    icon: mdi:play
+    mode: single
+    max_exceeded: silent
+    fields:
+      zone:
+        description: Roon zone (media_player)
+      wake:
+        description: What to turn on if the zone is off
+    sequence:
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.ohr_roon_zone
+        data:
+          value: "{{ zone }}"
+      - if: "{{ states(zone) in ['off', 'unavailable'] or is_state(wake, 'off') }}"
+        then:
+          - action: media_player.turn_on
+            target:
+              entity_id: "{{ wake }}"
+            continue_on_error: true
+          - wait_template: "{{ states(zone) not in ['off', 'unavailable'] }}"
+            timeout: 20
+      - action: media_player.media_play
+        target:
+          entity_id: "{{ zone }}"
+
+  # Output row: move the queue to another zone and control that one. A queue
+  # moves only if it's playing, or paused onto a zone that isn't playing;
+  # otherwise the remote just switches zones.
+  ohr_roon_output:
+    alias: Open Home Remote Roon output
+    icon: mdi:speaker-multiple
+    fields:
+      source:
+        description: Zone playing now
+      zone:
+        description: Zone to play on
+    sequence:
+      - if: >
+          {{ source != zone and (is_state(source, 'playing')
+             or (is_state(source, 'paused') and not is_state(zone, 'playing'))) }}
+        then:
+          - action: roon.transfer
+            target:
+              entity_id: "{{ source }}"
+            data:
+              transfer_id: "{{ zone }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.ohr_roon_zone
+        data:
+          value: "{{ zone }}"
+
+  # Re-render after a device action: once soon, once more for slow (cloud) devices.
+  ohr_refresh:
+    alias: Open Home Remote refresh screen
+    icon: mdi:refresh
+    mode: restart
+    sequence:
+      - delay:
+          milliseconds: 400
+      - action: script.ohr_render
+      - delay:
+          seconds: 2
+      - action: script.ohr_render
+
+  ohr_pick_mode:
+    alias: Open Home Remote pick mode
+    icon: mdi:format-list-bulleted
+    sequence:
+      - variables:
+          modes: "{{ state_attr('input_select.ohr_mode', 'options') }}"
+          idx: "{{ states('input_number.ohr_picker_cursor') | int(0) }}"
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.ohr_mode
+        data:
+          option: "{{ modes[idx] if idx < modes | count else modes[0] }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.ohr_cursor
+        data:
+          value: 0
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.ohr_detail
+        data:
+          value: ""
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ohr_sources
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ohr_picker
+
+  ohr_render:
+    alias: Open Home Remote render screen
+    icon: mdi:monitor
+    mode: restart
+    variables:
+      keymap: *ohr_keymap
+      devices: *ohr_devices
+      roon_zone: *ohr_roon_zone
+      roon_output: *ohr_roon_output
+      player: *ohr_player
+      modes: "{{ state_attr('input_select.ohr_mode', 'options') }}"
+      picker: "{{ is_state('input_boolean.ohr_picker', 'on') }}"
+      detail: "{{ states('input_text.ohr_detail') | replace('unknown', '') }}"
+      media_menu: *ohr_media_menu
+      ctx: *ohr_ctx
+      settings_rows: *ohr_settings_rows
+      menu_rows: *ohr_menu_rows
+      dev_list: >
+        {{ label_entities('remote') | reject('match', '^(scene|script)\.') | list
+           | expand | sort(attribute='name') | map(attribute='entity_id') | list }}
+      hot_list: >
+        {{ label_entities('remote') | select('match', '^(scene|script)\.') | list
+           | expand | sort(attribute='name') | map(attribute='entity_id') | list }}
+      detail_rows: *ohr_detail_rows
+      hotkeys: >
+        {% if ctx in ['picker', 'detail', 'settings'] %}{{ ['', '', '', ''] }}
+        {% elif ctx == 'devices' %}
+          {{ (hot_list[:4] | map('state_attr', 'friendly_name') | list + ['', '', '', ''])[:4] }}
+        {% else %}
+          {% set m = keymap.get(ctx, {}) %}
+          {% set ns = namespace(out=[]) %}
+          {% for k in ['h1', 'h2', 'h3', 'h4'] %}
+            {% set ns.out = ns.out + [m.get(k, {}).get('label', '')] %}
+          {% endfor %}
+          {{ ns.out }}
+        {% endif %}
+    sequence:
+      - choose:
+          - conditions: "{{ ctx == 'picker' }}"
+            sequence:
+              - action: esphome.ohr_bridge_show_list
+                data:
+                  mode: Mode
+                  title: Choose a mode
+                  cursor: "{{ states('input_number.ohr_picker_cursor') | int(0) }}"
+                  items: "{{ modes[:6] }}"
+          - conditions: "{{ ctx == 'detail' }}"
+            sequence:
+              - variables:
+                  n: "{{ detail_rows | count }}"
+                  cur: "{{ [states('input_number.ohr_detail_cursor') | int(0), [n - 1, 0] | max] | min }}"
+                  start: "{{ [[cur - 2, n - 6] | min, 0] | max }}"
+                  dom: "{{ detail.split('.')[0] }}"
+                  now_reading: >
+                    {% if dom == 'humidifier' %}{{ state_attr(detail, 'current_humidity') }}%
+                    {% elif dom == 'climate' %}{{ state_attr(detail, 'current_temperature') }}°
+                      {%- set h = state_attr(detail, 'current_humidity') %}{{ ' ' ~ h | round | int ~ '%' if h is number }}{% endif %}
+              - action: esphome.ohr_bridge_show_list
+                data:
+                  mode: Devices
+                  title: "{{ state_attr(detail, 'friendly_name') or detail }}  {{ now_reading | trim }}"
+                  cursor: "{{ cur - start if n > 0 else -1 }}"
+                  items: >
+                    {% set ns = namespace(out=[]) %}
+                    {% for r in detail_rows[start:start + 6] %}
+                      {% set ns.out = ns.out + [r.label ~ '  ' ~ r.value] %}
+                    {% endfor %}
+                    {{ ns.out if ns.out else ['Unavailable, back to close'] }}
+          - conditions: "{{ ctx == 'settings' }}"
+            sequence:
+              - action: esphome.ohr_bridge_show_list
+                data:
+                  mode: Settings
+                  title: Remote settings
+                  cursor: "{{ [states('input_number.ohr_cursor') | int(0), settings_rows | count - 1] | min }}"
+                  items: >
+                    {% set ns = namespace(out=[]) %}
+                    {% for r in settings_rows %}
+                      {% set ns.out = ns.out + [r.label ~ '  ' ~ (states(r.entity) | float(0) | int) ~ r.unit] %}
+                    {% endfor %}
+                    {{ ns.out }}
+          - conditions: "{{ ctx == 'sources' }}"
+            sequence:
+              - action: esphome.ohr_bridge_show_list
+                data:
+                  mode: Media
+                  title: Source
+                  cursor: "{{ [states('input_number.ohr_menu_cursor') | int(0), menu_rows | count - 1] | min }}"
+                  items: >
+                    {% set ns = namespace(out=[]) %}
+                    {% for r in menu_rows %}
+                      {% set ns.out = ns.out + [(('• ' if r.current else '') ~ r.label) if r.k == 'source'
+                                                else (r.label ~ '  ' ~ r.value ~ ('  (OK)' if r.get('pending') else ''))] %}
+                    {% endfor %}
+                    {{ ns.out }}
+          - conditions: "{{ ctx == 'devices' }}"
+            sequence:
+              - variables:
+                  n: "{{ dev_list | count }}"
+                  cur: "{{ [states('input_number.ohr_cursor') | int(0), [n - 1, 0] | max] | min }}"
+                  start: "{{ [[cur - 2, n - 6] | min, 0] | max }}"
+                  items: >
+                    {% set ns = namespace(out=[]) %}
+                    {% for e in dev_list[start:start + 6] %}
+                      {% set st = states(e) %}
+                      {% set b = state_attr(e, 'brightness') %}
+                      {% set domain = e.split('.')[0] %}
+                      {% if b is not none and st == 'on' %}
+                        {% set tag = (b | int(0) / 2.55) | round | int ~ '%' %}
+                      {% elif domain == 'humidifier' and st == 'on' %}
+                        {% set tag = state_attr(e, 'humidity') ~ '%' %}
+                      {% elif domain == 'climate' and st != 'off' %}
+                        {% set t = state_attr(e, 'temperature') %}
+                        {% set tag = (t if t is number else state_attr(e, 'target_temp_low') ~ '-' ~ state_attr(e, 'target_temp_high')) ~ '°' %}
+                      {% else %}
+                        {% set tag = st %}
+                      {% endif %}
+                      {% set ns.out = ns.out + [tag ~ '  ' ~ state_attr(e, 'friendly_name')] %}
+                    {% endfor %}
+                    {{ ns.out if ns.out else ['Label entities "remote"'] }}
+              - action: esphome.ohr_bridge_show_list
+                data:
+                  mode: Devices
+                  title: "{{ 'Devices' if n > 0 else 'No devices' }}"
+                  cursor: "{{ cur - start if n > 0 else -1 }}"
+                  items: "{{ items }}"
+        default:
+          - variables:
+              avr: media_player.avr
+              # "2:14 / 4:51" while the track reports a position.
+              track_time: >
+                {% set dur = state_attr(player, 'media_duration') %}
+                {% set pos = state_attr(player, 'media_position') %}
+                {% set upd = state_attr(player, 'media_position_updated_at') %}
+                {% if dur and pos is number %}
+                  {% if is_state(player, 'playing') and upd %}
+                    {% set pos = pos + (now() - as_datetime(upd)).total_seconds() %}
+                  {% endif %}
+                  {% set pos = [pos, dur] | min | int %}
+                  {{ '%d:%02d / %d:%02d' | format(pos // 60, pos % 60, dur // 60, dur % 60) }}
+                {% endif %}
+              vol: "{{ state_attr(avr, 'volume_level') }}"
+              titles:
+                idle: "Off"
+                shield: "{{ state_attr('media_player.shield', 'app_name') or 'Shield' }}"
+                tv: "{{ state_attr('media_player.tv', 'source') or 'TV' }}"
+                pc: PC
+                music: "{{ state_attr(player, 'media_title') or 'Music' }}"
+              subtitles:
+                idle: Hold home for modes
+                shield: "{{ state_attr('media_player.shield', 'media_title') or '' }}"
+                tv: "{{ state_attr('media_player.tv', 'media_title') or '' }}"
+                pc: ""
+                music: "{{ state_attr(player, 'media_artist') or '' }}{{ '\n' ~ track_time if track_time }}"
+          - action: esphome.ohr_bridge_show_status
+            data:
+              mode: "Media · {{ ctx | capitalize }}"
+              title: "{{ titles.get(ctx, ctx) }}"
+              subtitle: "{{ subtitles.get(ctx, '') }}"
+              value: "{{ (vol * 100) | round | int if ctx != 'idle' and vol is number else -1 }}"
+              value_label: >
+                {% if ctx == 'idle' or vol is not number %}
+                {% elif state_attr(avr, 'is_volume_muted') %}Muted
+                {% else %}Vol {{ (vol * 100) | round | int }}{% endif %}
+      - action: esphome.ohr_bridge_set_hotkeys
+        data:
+          labels: "{{ hotkeys }}"

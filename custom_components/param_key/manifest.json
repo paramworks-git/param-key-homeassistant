@@ -1,0 +1,9 @@
+{
+  "domain": "param_key",
+  "name": "PARAM KEY",
+  "codeowners": [],
+  "dependencies": ["esphome"],
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "0.0.1"
+}

@@ -1,0 +1,5 @@
+# Your own credentials and house-specific copies of the package never go in this repository.
+secrets.yaml
+*.local.yaml
+__pycache__/
+*.pyc
