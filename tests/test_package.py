@@ -507,7 +507,7 @@ async def main() -> None:
         "remote": "02:00:00:00:00:02", "battery": 68, "charging": "true", "firmware": "0.1.0", "rssi": -60})
     await hass.async_block_till_done()
     r = hass.states.get("sensor.remote_battery").attributes.get("remotes") or {}
-    check("labelled remote", r.get("Copy 2", {}).get("mac") == "02:00:00:00:00:02" and "AA" in r, r)
+    check("labelled remote", r.get("Bedroom", {}).get("mac") == "02:00:00:00:00:02" and "AA" in r, r)
 
     await hass.async_stop()
     print(f"\n{len(failures)} failure(s)")

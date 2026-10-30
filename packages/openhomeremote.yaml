@@ -160,12 +160,12 @@ template:
           firmware: "{{ trigger.event.data.firmware }}"
           # Per-remote readings, so several remotes on one bridge can be told apart
           # (the screen state is still shared between them). Keyed by the label
-          # below, or the MAC for an unlabelled remote.
+          # below, or the MAC for an unlabelled remote. Replace the examples with your
+          # remotes' MACs (from the remote_hello event) and names.
           remotes: >
             {% set labels = {
-                 '02:00:00:00:00:01': 'Me',
-                 '02:00:00:00:00:03': 'Copy 1',
-                 '02:00:00:00:00:02': 'Copy 2'} %}
+                 '02:00:00:00:00:01': 'Living room',
+                 '02:00:00:00:00:02': 'Bedroom'} %}
             {% set mac = labels.get(trigger.event.data.remote, trigger.event.data.remote) %}
             {% set old = this.attributes.get('remotes') or {} %}
             {% set prev = old.get(mac, {}) %}
