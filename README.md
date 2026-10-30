@@ -2,7 +2,7 @@
 
 Home Assistant side of the PARAM KEY remote: turns key presses from the remote's bridge into
 actions and draws the remote's screen. The firmware for the remote and the bridge is in
-[param-key-firmware](../param-key-firmware).
+the param-key repository (`firmware/`).
 
 Open firmware, open HA integration, documented hardware: MIT licensed (see [LICENSE](LICENSE)).
 
@@ -87,7 +87,7 @@ after waking, then every 60 s while awake. The package turns it into:
 
 | Entity | What it records |
 |---|---|
-| `sensor.remote_battery` | Percent from a LiPo discharge curve (`common/ohr_battery.h` in param-key-firmware), smoothed, and never rising while on battery. Keeps its last value through a reading that comes back unknown |
+| `sensor.remote_battery` | Percent from a LiPo discharge curve (`firmware/common/ohr_battery.h` in param-key), smoothed, and never rising while on battery. Keeps its last value through a reading that comes back unknown |
 | `binary_sensor.remote_charging` | On while USB is charging the battery (TP4054 status pin) |
 | `sensor.remote_signal` | RSSI of the hello at the bridge, in dBm |
 | `sensor.remote_last_wake` | Why the remote last woke (`ext1` = key or accelerometer, `reset`), with the EXT1 wake mask and accelerometer diagnostics as attributes |

@@ -1,4 +1,4 @@
-# PARAM KEY: Home Assistant side (protocol: docs/protocol.md in param-key-firmware).
+# PARAM KEY: Home Assistant side (protocol: docs/protocol.md in param-key).
 #
 # Install: copy or symlink into the HA config's packages/ directory. Needs the
 # bridge adopted in ESPHome with "Allow the device to perform Home Assistant
