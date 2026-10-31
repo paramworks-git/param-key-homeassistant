@@ -11,7 +11,28 @@ Open firmware, open HA integration, documented hardware: MIT licensed (see [LICE
 | Part | State |
 |---|---|
 | `packages/openhomeremote.yaml` | Working HA package (the key map, modes, screen renderer, battery sensors). The device entities in it are examples: change them to yours |
-| `custom_components/param_key/` | Integration skeleton. Next: each remote as a device with its entities, the dispatcher in Python, and a configurator panel (remotes, live key monitor, pairing, keymap editor, setup wizard) |
+| `custom_components/param_key/` | Pairing (each remote a device; only paired remotes are heard), and each remote's IR LED as an HA infrared emitter. Next: the key map, modes and screen renderer move here from the package |
+
+Needs Home Assistant 2026.10 or later, and bridge and remote firmware with protocol v2
+(param-key).
+
+## Install (integration)
+
+1. Copy `custom_components/param_key/` into your HA config's `custom_components/`
+   folder (or add this repository to HACS) and restart HA.
+2. Settings → Devices & services → **Add integration** → PARAM KEY, with a remote
+   on its "Pair with Home Assistant" screen. A new remote shows it on its own; hold
+   **home** and **back** for 5 seconds to pair one again. Once the integration is
+   set up, further remotes appear there as discovered.
+3. The remote shows a 6-digit code. Confirm it only if HA shows the same one.
+
+Each remote becomes a device with an **IR** entity (HA's infrared platform). It is
+available while the remote is awake: the remote can only send IR then, so IR suits
+key presses, not automations that run while it sleeps. HA's IR integrations (LG,
+Samsung, Marantz and others) can use it as their emitter.
+
+Removing a remote in HA takes its key off the bridges, so it can do nothing more
+until it is paired again.
 
 ## Install (package)
 
@@ -37,7 +58,8 @@ reflash.
 
 - **`keymap`** maps each key in each media context (`idle`, `shield`, `tv`, `pc`,
   `music`) to an action. Entries can be an Android TV command (`atv:`), an app
-  launch (`app:`), an LG button (`lg:`), a Denon source or sound mode, a script, or
+  launch (`app:`), an LG button (`lg:`), a Denon source or sound mode, an IR code
+  from the remote's own IR LED (`ir:`, needs the integration), a script, or
   any HA action with a target. `common` applies wherever a context doesn't override a
   key, and play, rew, fwd and stop fall back to the current media context, so
   they control what's playing from Devices or Settings mode too. The header comment in the file documents every entry type.
@@ -76,6 +98,13 @@ reflash.
   ▶: ▲▼ pick a setting (power, target humidity and mode; or HVAC mode, setpoints,
   fan, preset, and target humidity if the thermostat has one), ◀ ▶ change it, OK toggles power or steps to the next option,
   and back returns to the list.
+
+- **IR codes:** `ir: {protocol: nec, address: 0x04, command: 0x08}` sends a code
+  from the remote that was pressed. Protocols: `nec`, `samsung`, `sony` (with
+  `address_bits` 5, 8 or 13), `rc5`, `rc6`, or `{protocol: pronto, pronto: "0000
+  006D ..."}` for a code from a public Pronto database, or raw `timings`. `repeat:`
+  sends it more times. From an automation, call `param_key.send_ir` with the
+  remote's IR entity.
 
 To test a mapping without the remote, run `script.ohr_dispatch` from Developer tools
 with `remote: test`, `key: vol_up`, `type: press`.
@@ -124,8 +153,12 @@ Notes on reading it:
 ## Development
 
 ```sh
-./run_tests.sh      # package tests in the Home Assistant container
+./run_tests.sh      # package and integration tests in the Home Assistant container
 ```
+
+`tests/vectors.json` is a copy of param-key's `docs/test-vectors.json`: the
+firmware and the integration are both tested against it, so they agree on
+pairing. Copy it again when the protocol changes.
 
 If the Docker daemon runs on another host, set `HOST_DIR` to this directory as that host sees it.
 Install the secret scan before committing: `pre-commit install` (gitleaks). Keep your own

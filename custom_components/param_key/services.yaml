@@ -1,0 +1,53 @@
+send_ir:
+  fields:
+    remote:
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    entity_id:
+      selector:
+        entity:
+          integration: param_key
+          domain: infrared
+          multiple: true
+    protocol:
+      required: true
+      example: nec
+      selector:
+        select:
+          options: [nec, samsung, sony, rc5, rc6, pronto, raw]
+    address:
+      example: "0x04"
+      selector:
+        text:
+    command:
+      example: "0x08"
+      selector:
+        text:
+    address_bits:
+      selector:
+        select:
+          options: ["5", "8", "13"]
+    toggle:
+      selector:
+        number:
+          min: 0
+          max: 1
+    repeat:
+      selector:
+        number:
+          min: 0
+          max: 20
+    pronto:
+      selector:
+        text:
+          multiline: true
+    timings:
+      selector:
+        object:
+    carrier:
+      selector:
+        number:
+          min: 0
+          max: 500000
+          unit_of_measurement: Hz

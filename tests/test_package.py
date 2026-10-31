@@ -33,6 +33,7 @@ STUB_SERVICES = {
     "button": ["press"],
     "humidifier": ["set_humidity", "set_mode", "toggle"],
     "climate": ["set_temperature", "set_hvac_mode", "set_fan_mode", "set_preset_mode", "set_humidity"],
+    "param_key": ["send_ir"],
 }
 
 calls: list[tuple[str, dict]] = []
@@ -74,6 +75,9 @@ async def main() -> None:
     zones = ["media_player.roon_zone", "media_player.kitchen"]
     for s in ["ohr_dispatch", "ohr_render"]:
         pkg["script"][s]["variables"]["devices"]["roon_zones"] = zones
+    # An IR hotkey (the integration's param_key.send_ir is stubbed above).
+    pkg["script"]["ohr_dispatch"]["variables"]["keymap"]["tv"]["h4"] = {
+        "label": "Soundbar", "ir": {"protocol": "nec", "address": "0x04", "command": 8}}
 
     for domain in ["homeassistant", "input_select", "input_boolean", "input_number", "input_text"]:
         assert await async_setup_component(hass, domain, {domain: pkg.get(domain, {})}), domain
@@ -132,6 +136,18 @@ async def main() -> None:
           and msgs[0][1]["message"] == "Plex: Opens com.plexapp.android on the Shield", msgs)
     c = await key("ok")
     check("shield ok press waits (has a hold)", c == [], c)
+
+    # --- IR entry: sent by the remote that pressed the key
+    set_media("TV Audio")
+    await hass.async_block_till_done()
+    c = await key("h4", "tap")
+    check("ir entry -> param_key.send_ir", c == [("param_key.send_ir", {
+        "protocol": "nec", "address": "0x04", "command": 8, "remote": "AA"})], c)
+    c = await key("h4", "hold")
+    msgs = [x for x in calls if x[0] == "esphome.ohr_bridge_show_message"]
+    check("hold IR hotkey previews it", c == [] and msgs and msgs[0][1]["message"] == "Soundbar: IR NEC 8", msgs)
+    set_media("SHIELD")
+    await hass.async_block_till_done()
     c = await key("ok", "tap")
     check("shield ok tap -> DPAD_CENTER", c == [("remote.send_command", {"entity_id": ["remote.shield"], "command": "DPAD_CENTER"})], c)
     c = await key("ok", "hold")

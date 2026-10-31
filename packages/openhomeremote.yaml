@@ -29,6 +29,13 @@
 #                   in the Source menu's Output row, or HEOS when only it plays.
 #                   toggle wakes a Roon zone that's off and resumes its queue.
 #   script: NAME    run script.NAME
+#   ir: {protocol, address, command}   send an IR code from the remote's IR LED
+#                   (needs the param_key integration). protocol: nec, samsung,
+#                   sony (address_bits 5/8/13), rc5, rc6 (toggle); or
+#                   {protocol: pronto, pronto: "0000 006D ..."}, or
+#                   {protocol: raw, timings: [...], carrier: 38000}. repeat: N
+#                   repeats it. Codes for many devices are in HA's infrared
+#                   integrations and in public Pronto databases.
 #   action/target/data   any HA action
 #   list: up|down|toggle|more|less, hot: N, lights_off   Devices mode
 #   detail: more|less|select|close                      detail screen
@@ -595,6 +602,7 @@ script:
           {% elif e.roon is defined %}{% set what = 'Plays Roon on ' ~ (state_attr(d.roon, 'friendly_name') or d.roon) %}
           {% elif e.sound is defined %}{% set what = 'Sound mode ' ~ e.sound %}
           {% elif e.script is defined %}{% set what = state_attr('script.' ~ e.script, 'friendly_name') or e.script %}
+          {% elif e.ir is defined %}{% set what = 'IR ' ~ (e.ir.protocol | upper) ~ ((' ' ~ e.ir.command) if e.ir.command is defined else '') %}
           {% elif e.action is defined %}{% set what = e.action ~ ' ' ~ (e.target | default({})).get('entity_id', '') %}
           {% else %}{% set what = 'Nothing' %}{% endif %}
           {% set msg = (e.label ~ ': ' if e.label is defined else '') ~ what %}
@@ -628,6 +636,8 @@ script:
           {% endif %}
         {% elif entry.script is defined %}
           {{ {'action': 'script.' ~ entry.script} }}
+        {% elif entry.ir is defined %}
+          {{ {'action': 'param_key.send_ir', 'data': dict(entry.ir, remote=remote)} }}
         {% elif entry.list in ['up', 'down'] and n > 0 %}
           {% set new = [[cur + (1 if entry.list == 'down' else -1), 0] | max, n - 1] | min %}
           {{ {'action': 'input_number.set_value', 'target': {'entity_id': cursor_entity}, 'data': {'value': new}} }}
