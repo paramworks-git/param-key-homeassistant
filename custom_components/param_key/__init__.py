@@ -4,7 +4,7 @@ Each paired remote is a config entry and a device, with an infrared emitter
 entity (HA's infrared platform), so HA's IR integrations can use it too. The
 hub (hub.py) talks to the bridges: pairing, the remotes' keys, and IR.
 
-Still in the package (packages/openhomeremote.yaml) for now: the key map, the
+Still in the package (packages/param_key.yaml) for now: the key map, the
 screen renderer and the battery sensors.
 """
 

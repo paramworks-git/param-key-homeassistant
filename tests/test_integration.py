@@ -76,7 +76,7 @@ async def main() -> None:
         async def record(call: ServiceCall, a=action) -> None:
             calls.append((a, dict(call.data)))
         hass.services.async_register("esphome", f"test_bridge_{action}", record)
-    hass.services.async_register("esphome", "ohr_bridge_show_status", lambda call: None)
+    hass.services.async_register("esphome", "param_key_bridge_show_status", lambda call: None)
 
     assert await async_setup_component(hass, "param_key", {})
     await hass.async_block_till_done()
@@ -86,7 +86,7 @@ async def main() -> None:
         return [d for a, d in calls if a == action]
 
     async def pair_request(remote_priv: X25519PrivateKey, mac: str = MAC) -> None:
-        hass.bus.async_fire("esphome.openhomeremote_pair_request", {
+        hass.bus.async_fire("esphome.param_key_pair_request", {
             "remote": mac, "public_key": raw(remote_priv.public_key()).hex(), "firmware": "0.2.0",
             "rssi": -50, "bridge": BRIDGE})
         await hass.async_block_till_done()
@@ -100,7 +100,7 @@ async def main() -> None:
         data = {"remote": mac, "key": "ok", "type": "press", "rssi": -50, "battery": 80}
         if counter is not None:
             data.update(counter=counter, bridge=BRIDGE)
-        hass.bus.async_fire(f"esphome.openhomeremote_{event}", data)
+        hass.bus.async_fire(f"esphome.param_key_{event}", data)
         await hass.async_block_till_done()
 
     # --- Manual add with no remote asking
@@ -146,7 +146,7 @@ async def main() -> None:
     await frame("key", 99, mac="02:00:00:00:00:0B")
     check("unpaired remote ignored", "02:00:00:00:00:0B" not in hub.counters and "02:00:00:00:00:0B" not in hub.seen)
     calls.clear()
-    hass.bus.async_fire("esphome.openhomeremote_bridge_online", {"bridge": BRIDGE})
+    hass.bus.async_fire("esphome.param_key_bridge_online", {"bridge": BRIDGE})
     await hass.async_block_till_done()
     check("bridge online -> key, floor past the last counter",
           of("set_remote") == [{"remote": MAC, "key": key.hex(), "floor": 8}], of("set_remote"))

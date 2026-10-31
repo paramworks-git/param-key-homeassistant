@@ -1,0 +1,7 @@
+# Secret scan settings (pre-commit gitleaks hook). Default rules, plus:
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Published protocol test vectors: keys derived from fixed labels, not secrets"
+paths = ['''(^|/)tests/vectors\.json$''']

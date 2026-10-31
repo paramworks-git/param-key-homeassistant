@@ -10,7 +10,7 @@ Open firmware, open HA integration, documented hardware: MIT licensed (see [LICE
 
 | Part | State |
 |---|---|
-| `packages/openhomeremote.yaml` | Working HA package (the key map, modes, screen renderer, battery sensors). The device entities in it are examples: change them to yours |
+| `packages/param_key.yaml` | Working HA package (the key map, modes, screen renderer, battery sensors). The device entities in it are examples: change them to yours |
 | `custom_components/param_key/` | Pairing (each remote a device; only paired remotes are heard), and each remote's IR LED as an HA infrared emitter. Next: the key map, modes and screen renderer move here from the package |
 
 Needs Home Assistant 2026.10 or later, and bridge and remote firmware with protocol v2
@@ -36,7 +36,7 @@ until it is paired again.
 
 ## Install (package)
 
-1. Copy `packages/openhomeremote.yaml` into your HA config's
+1. Copy `packages/param_key.yaml` into your HA config's
    `packages/` folder. Packages have to be enabled in `configuration.yaml`:
    ```yaml
    homeassistant:
@@ -44,8 +44,8 @@ until it is paired again.
    ```
 2. Restart HA, or for later changes run Developer tools → YAML → **All YAML
    configuration**.
-3. The bridge's actions are named after its device name: `ohr-bridge` gives
-   `esphome.ohr_bridge_show_status` and so on. If you rename the bridge, rename the
+3. The bridge's actions are named after its device name: `param-key-bridge` gives
+   `esphome.param_key_bridge_show_status` and so on. If you rename the bridge, rename the
    actions in the package to match.
 
 Reset the remote. Within a second, "Waiting for bridge" should change to HA's Media
@@ -53,7 +53,7 @@ screen.
 
 ## Configuring keys and modes
 
-Everything is in `packages/openhomeremote.yaml`, so changes need no
+Everything is in `packages/param_key.yaml`, so changes need no
 reflash.
 
 - **`keymap`** maps each key in each media context (`idle`, `shield`, `tv`, `pc`,
@@ -73,7 +73,7 @@ reflash.
 - **Settings mode** (in the mode picker): ▲▼ pick Brightness, Screen off after or
   Sleep after, ◀ ▶ change it. The bridge passes it to the remote at once and
   again on every wake; the remote keeps it in flash. Backed by
-  `input_number.ohr_brightness`, `ohr_screen_off` and `ohr_sleep_after`, so an
+  `input_number.param_key_brightness`, `param_key_screen_off` and `param_key_sleep_after`, so an
   automation can change them too (e.g. dimmer at night).
 - **Track time:** on the music screen the artist line gets "2:14 / 4:51" from
   the Roon zone, ticking every second while the remote is awake.
@@ -106,7 +106,7 @@ reflash.
   sends it more times. From an automation, call `param_key.send_ir` with the
   remote's IR entity.
 
-To test a mapping without the remote, run `script.ohr_dispatch` from Developer tools
+To test a mapping without the remote, run `script.param_key_dispatch` from Developer tools
 with `remote: test`, `key: vol_up`, `type: press`.
 
 ## Battery logging
@@ -116,7 +116,7 @@ after waking, then every 60 s while awake. The package turns it into:
 
 | Entity | What it records |
 |---|---|
-| `sensor.remote_battery` | Percent from a LiPo discharge curve (`firmware/common/ohr_battery.h` in param-key), smoothed, and never rising while on battery. Keeps its last value through a reading that comes back unknown |
+| `sensor.remote_battery` | Percent from a LiPo discharge curve (`firmware/common/pk_battery.h` in param-key), smoothed, and never rising while on battery. Keeps its last value through a reading that comes back unknown |
 | `binary_sensor.remote_charging` | On while USB is charging the battery (TP4054 status pin) |
 | `sensor.remote_signal` | RSSI of the hello at the bridge, in dBm |
 | `sensor.remote_last_wake` | Why the remote last woke (`ext1` = key or accelerometer, `reset`), with the EXT1 wake mask and accelerometer diagnostics as attributes |

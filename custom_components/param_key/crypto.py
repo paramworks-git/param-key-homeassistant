@@ -1,6 +1,6 @@
 """Pairing crypto, Home Assistant's end (docs/protocol.md, "Pairing").
 
-Must agree with the firmware's common/ohr_crypto.h; tests/vectors.json (a copy
+Must agree with the firmware's common/pk_crypto.h; tests/vectors.json (a copy
 of param-key's docs/test-vectors.json) pins both.
 """
 
