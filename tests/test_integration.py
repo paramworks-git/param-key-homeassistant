@@ -79,6 +79,11 @@ async def main() -> None:
         async def record(call: ServiceCall, a=action) -> None:
             calls.append((a, dict(call.data)))
         hass.services.async_register("esphome", f"test_bridge_{action}", record)
+    # Screen actions as bridge firmware 0.3 has them: *_for twins, one screen per remote.
+    for action in ["show_list", "set_hotkeys", "show_message", "set_config"]:
+        async def record_screen(call: ServiceCall, a=action) -> None:
+            calls.append((a, dict(call.data)))
+        hass.services.async_register("esphome", f"test_bridge_{action}_for", record_screen)
     hass.services.async_register("esphome", "param_key_bridge_show_status", lambda call: None)
 
     assert await async_setup_component(hass, "param_key", {})
@@ -148,17 +153,24 @@ async def main() -> None:
     # --- Counters and liveness
     await frame("key", 7)
     check("frame -> available", hass.states.get(ent).state != "unavailable", hass.states.get(ent))
+    hub = hass.data["param_key"]
+    hub._sent.clear()
     calls.clear()
     await frame("hello", 3)
     await frame("hello", 4)
-    check("no package: one ready screen per bridge", [d["title"] for d in of("show_status")] == ["Ready"], calls)
-    hub = hass.data["param_key"]
+    check("no labels: the screen says what to do, once", [d["items"] for d in of("show_list")]
+          == [['Label entities "remote"']] and of("show_list")[0]["remote"] == MAC, calls)
+    check("settings sent with the screen", of("set_config") == [
+        {"brightness": 80, "backlight_seconds": 15, "sleep_seconds": 30, "remote": MAC}], of("set_config"))
     check("counter keeps the highest", hub.counters.get(MAC) == 7, hub.counters)
+    battery = er.async_get(hass).async_get_entity_id("sensor", "param_key", f"{MAC}_battery")
+    check("battery from the hello", battery and hass.states.get(battery).state == "80", battery)
     hass.services.async_register("script", "param_key_render", lambda call: None)
-    hub._ready_shown.clear()
+    hub._sent.clear()
     calls.clear()
     await frame("hello", 5)
-    check("package installed: it draws the screen", of("show_status") == [], calls)
+    await frame("key", 6)
+    check("package installed: it draws the screen", of("show_list") == [] and of("set_hotkeys") == [], calls)
     hass.services.async_remove("script", "param_key_render")
     await frame("key", 99, mac="02:00:00:00:00:0B")
     check("unpaired remote ignored", "02:00:00:00:00:0B" not in hub.counters and "02:00:00:00:00:0B" not in hub.seen)
@@ -212,6 +224,122 @@ async def main() -> None:
         check("asleep remote: send_ir fails", "asleep" in str(err), err)
     await frame("key", None)
     check("old firmware's event doesn't count as awake", not hub.awake(MAC))
+
+    # --- Menus from labels (menu.py, screen.py)
+    from homeassistant.helpers import area_registry as ar, label_registry as lr  # noqa: E402
+    acted: list[tuple[str, dict]] = []
+    for domain, service in [("homeassistant", "toggle"), ("light", "turn_on"), ("light", "turn_off"),
+                            ("scene", "turn_on"), ("climate", "set_temperature")]:
+        async def act(call: ServiceCall, name=f"{domain}.{service}") -> None:
+            acted.append((name, dict(call.data)))
+        hass.services.async_register(domain, service, act)
+    ents, areas, labels = er.async_get(hass), ar.async_get(hass), lr.async_get(hass)
+    remote_label = labels.async_create("remote").label_id
+    movie_label = labels.async_create("Remote/Movie night").label_id
+    office, living = areas.async_create("Office").id, areas.async_create("Living").id
+
+    def entity(entity_id: str, state: str, name: str, area: str | None, label: str, **attrs) -> None:
+        domain, object_id = entity_id.split(".")
+        ents.async_get_or_create(domain, "test", object_id, suggested_object_id=object_id)
+        ents.async_update_entity(entity_id, area_id=area, labels={label})
+        hass.states.async_set(entity_id, state, {"friendly_name": name, **attrs})
+
+    entity("light.office_lamp", "on", "Office Lamp", office, remote_label, brightness=128)
+    entity("light.office_desk", "off", "Office Desk", office, remote_label)
+    entity("scene.office_focus", "scening", "Office Focus", office, remote_label)
+    for i in range(3):
+        entity(f"light.living_{i}", "on" if i == 0 else "off", f"Living Light {i}", living, remote_label, brightness=255)
+    for i in range(2):
+        entity(f"switch.living_{i}", "off", f"Living Switch {i}", living, remote_label)
+    entity("fan.living", "off", "Living Fan", living, remote_label)
+    entity("media_player.living", "playing", "Living TV", living, remote_label)
+    entity("scene.movie", "scening", "Movie", None, movie_label)
+    entity("light.backlight", "off", "Backlight", None, movie_label)
+    entity("switch.porch", "off", "Porch", None, remote_label)
+    entity("climate.hall", "heat", "Hall", None, remote_label, temperature=20, current_temperature=19,
+           hvac_modes=["off", "heat"], target_temp_step=0.5)
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.5)  # the redraw after registry changes is debounced
+    await hass.async_block_till_done()
+    counter = 1000
+
+    async def press(key: str, event: str = "press") -> None:
+        nonlocal counter
+        counter += 1
+        hass.bus.async_fire("esphome.param_key_key", {"remote": MAC, "key": key, "type": event, "rssi": -50,
+                                                     "counter": counter, "bridge": BRIDGE})
+        await hass.async_block_till_done()
+
+    def screen() -> dict:
+        return of("show_list")[-1] if of("show_list") else {}
+
+    R = "\uf054  "
+    check("root: Areas, custom menus, then the rest", screen().get("items") == [
+        R + "Living", R + "Office", R + "Movie night", "20°  Hall", "off  Porch"]
+        and screen()["title"] == "Devices" and screen()["cursor"] == 0, screen())
+    await press("down")
+    await press("ok")
+    check("Office: names without the Area, sorted", screen().get("items") == ["off  Desk", "50%  Lamp"]
+          and screen()["title"] == "Office", screen())
+    check("Office scene is a hotkey", of("set_hotkeys")[-1]["labels"] == ["Focus", "", "", ""], of("set_hotkeys"))
+    await press("down")
+    await press("ok")
+    await press("right")
+    await press("h1", "tap")
+    check("OK toggles, ▶ brightens, hotkey runs", acted == [
+        ("homeassistant.toggle", {"entity_id": "light.office_lamp"}),
+        ("light.turn_on", {"entity_id": "light.office_lamp", "brightness_step_pct": 10}),
+        ("scene.turn_on", {"entity_id": "scene.office_focus"})], acted)
+    calls.clear()
+    await press("h1", "hold")
+    check("hotkey held: what it does", [m["message"] for m in of("show_message")] == ["Runs Office Focus"], calls)
+    calls.clear()
+    hass.states.async_set("light.office_lamp", "on", {"friendly_name": "Office Lamp", "brightness": 255})
+    await asyncio.sleep(0.5)
+    await hass.async_block_till_done()
+    check("state change redraws the screen", screen().get("items") == ["off  Desk", "100%  Lamp"], calls)
+    calls.clear()
+    hass.states.async_set("light.living_1", "on", {"friendly_name": "Living Light 1", "brightness": 10})
+    await asyncio.sleep(0.5)
+    await hass.async_block_till_done()
+    check("off-screen state change: nothing sent", of("show_list") == [], calls)
+    await press("back")
+    check("back: up a level, cursor kept", screen().get("cursor") == 1 and screen()["title"] == "Devices", screen())
+    await press("up")
+    await press("ok")
+    check("big Area grouped by kind", screen().get("items") == [R + "Lights", R + "Switches", R + "Fans", R + "Media"]
+          and screen()["title"] == "Living", screen())
+    await press("home", "tap")
+    for _ in range(3):
+        await press("down")
+    await press("ok")
+    check("thermostat detail", screen().get("title") == "Hall  19°"
+          and screen()["items"] == ["Mode  heat", "Target  20°"], screen())
+    acted.clear()
+    await press("down")
+    await press("right")
+    check("▶ on Target", acted == [("climate.set_temperature", {"entity_id": "climate.hall", "temperature": 20.5})],
+          acted)
+    await press("back")
+    await press("home", "tap")
+    acted.clear()
+    await press("power", "tap")
+    lit = sorted(acted[0][1]["entity_id"]) if acted else []
+    check("power: lights in this menu off", lit == ["light.living_0", "light.living_1", "light.office_lamp"], acted)
+    calls.clear()
+    await press("settings", "tap")
+    await press("right")
+    number = ents.async_get_entity_id("number", "param_key", f"{MAC}_brightness")
+    check("settings screen changes brightness", of("set_config")[-1]["brightness"] == 90
+          and float(hass.states.get(number).state) == 90, (of("set_config"), number and hass.states.get(number)))
+    await hass.services.async_call("number", "set_value", {"entity_id": number, "value": 40}, blocking=True)
+    check("number entity changes it too", of("set_config")[-1]["brightness"] == 40
+          and screen()["items"][0] == "Brightness  40%", (of("set_config"), screen()))
+    await press("settings", "tap")
+    ents.async_update_entity("switch.porch", labels=set())
+    await asyncio.sleep(0.5)
+    await hass.async_block_till_done()
+    check("label removed: gone from the menu", "off  Porch" not in screen().get("items", []), screen())
 
     # --- Pairing again: same entry, new key, counters start over
     remote_priv2 = X25519PrivateKey.generate()

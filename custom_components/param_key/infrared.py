@@ -7,14 +7,13 @@ from datetime import timedelta
 from homeassistant.components.infrared import InfraredCommand, InfraredEmitterEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
 from . import emitter_unique_id
-from .const import CONF_FIRMWARE, CONF_REMOTE, DOMAIN, SIGNAL_REMOTE_SEEN
+from .const import CONF_REMOTE, SIGNAL_REMOTE_SEEN
+from .entity import remote_device
 from .hub import Hub, async_get_hub
 
 
@@ -32,14 +31,7 @@ class RemoteEmitter(InfraredEmitterEntity):
         self._hub = hub
         self._mac: str = entry.data[CONF_REMOTE]
         self._attr_unique_id = emitter_unique_id(self._mac)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._mac)},
-            connections={(dr.CONNECTION_NETWORK_MAC, self._mac.lower())},
-            name="PARAM KEY remote",
-            manufacturer="PARAM KEY",
-            model="Remote",
-            sw_version=entry.data.get(CONF_FIRMWARE) or None,
-        )
+        self._attr_device_info = remote_device(entry)
         self._was_available = False
 
     @property

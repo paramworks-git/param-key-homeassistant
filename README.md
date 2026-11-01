@@ -1,7 +1,8 @@
 # PARAM KEY for Home Assistant
 
 The Home Assistant integration for the [PARAM KEY](https://github.com/paramworks-git/param-key)
-remote: it sets up bridges, pairs remotes, and gives each remote's IR blaster to Home Assistant.
+remote: it sets up bridges, pairs remotes, puts the devices you choose on the remote's screen, and
+gives each remote's IR blaster to Home Assistant.
 The remote's firmware, the bridge and the installer are in
 [param-key](https://github.com/paramworks-git/param-key). MIT licensed (see [LICENSE](LICENSE)).
 
@@ -16,9 +17,14 @@ Needs Home Assistant 2026.10 or later.
    Edge; any ESP32 board).
 3. In Settings → Devices & services, under **Discovered**:
    - add the ESPHome device `param-key-bridge-…` (Home Assistant sets its encryption key);
-   - then add **PARAM KEY**, which lets the bridge send key presses to Home Assistant.
+   - then add **PARAM KEY** for that bridge.
+
+   The bridge has to be on a network Home Assistant can connect to (Home Assistant opens the
+   connection), with internet access for firmware updates.
 4. Switch the remote on. It appears under Discovered as a PARAM KEY remote: add it, and confirm
    only if the 6-digit code matches the one on the remote's screen.
+5. Give the label **`remote`** to the lights, switches, fans, covers, thermostats, media players,
+   scenes and scripts you want on the remote. They show up on its screen at once.
 
 A remote that is already paired can be paired again by holding **home** and **back** for 5
 seconds. Removing a remote in Home Assistant takes its key off the bridges, so it can do nothing
@@ -32,17 +38,50 @@ Assistant's IR integrations (LG, Samsung, Marantz and others) can use it as thei
 sends IR only while it's awake (after a key press, or being picked up), so IR suits key presses
 rather than automations that run while it sleeps.
 
-## Status
+## Using the remote
 
-| Part | State |
+The remote's screen lists what you labelled `remote`, by Area:
+
+- **Top level:** your Areas, then your own menus (below), then labelled entities that have no Area.
+  An Area with more than 6 entities is split into Lights, Switches, Fans, Covers, Climate, Media
+  and Scenes. A level with only one choice is skipped, so a small setup is one flat list.
+- **Your own menus:** a label such as `remote/Movie night` makes a menu called "Movie night";
+  `remote/Movie night/Lights` nests one inside it. They're listed by name, whatever the Area.
+- **Hotkeys:** the scenes, scripts and buttons in a menu become its four hotkeys (the bar under the
+  screen). Hold a hotkey to see what it runs.
+
+| Key | Does |
 |---|---|
-| Integration | Bridges, pairing, security, IR. Next: menus and key mapping from labels, and the screens, so that no YAML is needed |
-| `packages/param_key.yaml` | The current key map, modes, screen renderer and battery sensors, as a YAML package for advanced setups (below). Its devices are examples |
+| ▲ ▼ | Move |
+| OK | Toggle, run a scene or script, play/pause a media player, or open a menu |
+| ◀ ▶ | Dimmer/brighter, fan slower/faster, cover position, volume |
+| back | Up one level |
+| home | Back to the top |
+| settings | Brightness, screen-off and sleep times (also on the remote's device page in HA) |
+| power | Turns off the lights in the current menu (at the top: all labelled lights) |
 
-Without the package, a paired remote shows "Ready" and its keys arrive as
-`esphome.param_key_key` events, which automations can use.
+Thermostats and humidifiers open a detail screen on OK: ▲ ▼ pick mode, target, fan or preset,
+◀ ▶ change it. Locks, alarms and sensors are shown but not changed from the remote.
+
+Each remote also has **Battery** and **Charging** sensors, and every key press is an
+`esphome.param_key_key` event (`remote`, `key`, `type`: `press`, `tap`, `hold`, `repeat`), so
+automations can give keys the menus don't use (volume, media keys) a job.
+
+Each remote has a screen of its own with bridge firmware 0.3.0 or later; with an older bridge, the
+remotes on it share one.
+
+## What's next
+
+- **Rooms:** with a bridge per room, the remote shows the Area it's in.
+- **Media setup:** a guided setup for TV, AVR and streamer keys, as an alternative to the
+  YAML package below.
+- **IR learning** (PARAM KEY v2, which has an IR receiver): point an old remote at it to copy a button.
 
 ## Advanced: the YAML package
+
+The package (`packages/param_key.yaml`) is the full media setup the remote started with: modes,
+a key map per TV/AVR/streamer context, a source menu and Roon. Its devices are examples to adapt.
+When it is installed, it draws the remote's screen instead of the integration.
 
 1. Copy `packages/param_key.yaml` into your HA config's
    `packages/` folder. Packages have to be enabled in `configuration.yaml`:
@@ -60,7 +99,7 @@ Without the package, a paired remote shows "Ready" and its keys arrive as
 Reset the remote. Within a second, "Waiting for bridge" should change to HA's Media
 screen.
 
-## Configuring keys and modes
+## Configuring keys and modes (YAML package)
 
 Everything is in `packages/param_key.yaml`, so changes need no
 reflash.
@@ -118,8 +157,9 @@ reflash.
 To test a mapping without the remote, run `script.param_key_dispatch` from Developer tools
 with `remote: test`, `key: vol_up`, `type: press`.
 
-## Battery logging
+## Battery logging (YAML package)
 
+The integration's Battery and Charging sensors cover most uses. The package adds a few more.
 The remote sends a hello on every wake and with every battery reading: about 2 s
 after waking, then every 60 s while awake. The package turns it into:
 

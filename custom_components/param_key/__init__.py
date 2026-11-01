@@ -1,11 +1,13 @@
 """PARAM KEY: physical remotes for Home Assistant.
 
 Each paired remote is a config entry and a device, with an infrared emitter
-entity (HA's infrared platform), so HA's IR integrations can use it too. The
-hub (hub.py) talks to the bridges: pairing, the remotes' keys, and IR.
+entity (HA's infrared platform, so HA's IR integrations can use it too), its
+settings (number), battery and charging. The hub (hub.py) talks to the bridges:
+pairing, the remotes' keys, IR, and each remote's screen: menus of the entities
+labelled `remote` (menu.py, screen.py).
 
-Still in the package (packages/param_key.yaml) for now: the key map, the
-screen renderer and the battery sensors.
+The YAML package (packages/param_key.yaml) is the advanced alternative: when it
+is installed, it draws the screen instead.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from .const import CONF_BRIDGE, CONF_KEY, CONF_REMOTE, DOMAIN
 from .hub import async_get_hub, bridge_prefix
 from .ir import PROTOCOLS, build_command, code_int
 
-PLATFORMS = ["infrared"]
+PLATFORMS = ["binary_sensor", "infrared", "number", "sensor"]
 SERVICE_SEND_IR = "send_ir"
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -91,6 +93,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
     await hub.provision(entry.data[CONF_REMOTE], entry.data[CONF_KEY])
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if hub.owns_screen():
+        await hub.draw(entry.data[CONF_REMOTE])
     return True
 
 

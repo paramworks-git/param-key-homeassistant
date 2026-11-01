@@ -36,3 +36,4 @@ PAIR_REQUEST_FRESH = timedelta(minutes=2)
 MAX_IR_TIMINGS = 725
 
 SIGNAL_REMOTE_SEEN = f"{DOMAIN}_remote_seen_{{}}"
+SIGNAL_REMOTE_STATUS = f"{DOMAIN}_remote_status_{{}}"  # battery, charging or settings changed

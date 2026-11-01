@@ -3,7 +3,8 @@
 One Hub per Home Assistant: it listens to the bridges' events, remembers which
 bridge last heard each remote and the last counter each remote sent, offers
 remotes that ask to pair as discovered devices, and calls the bridges' actions
-(pairing, keys, IR).
+(pairing, keys, IR). It also draws each remote's screen (screen.py, menus from
+labels in menu.py) unless the YAML package does.
 """
 
 from __future__ import annotations
@@ -19,8 +20,16 @@ from infrared_protocols.commands import Command
 from homeassistant.config_entries import SOURCE_INTEGRATION_DISCOVERY
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import discovery_flow
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    discovery_flow,
+    entity_registry as er,
+    label_registry as lr,
+)
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -41,7 +50,10 @@ from .const import (
     MAX_IR_TIMINGS,
     PAIR_REQUEST_FRESH,
     SIGNAL_REMOTE_SEEN,
+    SIGNAL_REMOTE_STATUS,
 )
+from . import menu as menus
+from .screen import SETTINGS, Call, RemoteScreen
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,11 +63,9 @@ MAX_REQUESTS = 20
 # Bridge epochs (docs/protocol.md, "Security"): 24-bit, never below the minutes since this date.
 EPOCH_BASE = datetime(2026, 1, 1, tzinfo=UTC)
 MAX_EPOCH = 0xFFFFFF
-# Until the integration draws screens itself: what a paired remote shows when the YAML
-# package (which has its own renderer, script.param_key_render) isn't installed.
+# The YAML package draws the screen itself (script.param_key_render): then the hub doesn't.
 PACKAGE_RENDERER = "param_key_render"
-READY_SCREEN = {"mode": "PARAM KEY", "title": "Ready", "subtitle": "Paired with Home Assistant",
-                "value": -1, "value_label": ""}
+REDRAW_COOLDOWN = 0.3  # s: entity states settling after a key press
 
 
 @dataclass
@@ -93,16 +103,28 @@ class Hub:
         self.epochs: dict[str, int] = {}  # bridge action prefix -> last epoch HA gave it
         self._epoch_sent: set[str] = set()  # bridges that have an epoch from this HA run
         self._bridge_locks: dict[str, asyncio.Lock] = {}
-        self._ready_shown: set[str] = set()  # bridges that have the ready screen cached
         self.seen: dict[str, datetime] = {}  # MAC -> last frame
         self.heard_by: dict[str, str] = {}  # MAC -> bridge that heard the last frame
         self.requests: dict[str, PairRequest] = {}
+        self.settings: dict[str, dict[str, int]] = {}  # MAC -> remote settings (screen.SETTINGS)
+        self.status: dict[str, dict[str, Any]] = {}  # MAC -> battery, charging from its last hello
+        self.screens: dict[str, RemoteScreen] = {}
+        self._root: menus.Menu | None = None
+        self._sent: dict[tuple[str, str, str], dict[str, Any]] = {}  # (bridge, MAC, action) -> data
+        self._unsub_states: Any = None
+        self._watched: frozenset[str] = frozenset()
+        self._redraw = Debouncer(hass, _LOGGER, cooldown=REDRAW_COOLDOWN, immediate=False,
+                                 function=self._redraw_all)
 
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
         self.counters = dict(stored.get("counters", {}))
         self.epochs = dict(stored.get("epochs", {}))
+        self.settings = {mac: dict(v) for mac, v in stored.get("settings", {}).items()}
         bus = self.hass.bus
+        for event in (er.EVENT_ENTITY_REGISTRY_UPDATED, dr.EVENT_DEVICE_REGISTRY_UPDATED,
+                      ar.EVENT_AREA_REGISTRY_UPDATED, lr.EVENT_LABEL_REGISTRY_UPDATED):
+            bus.async_listen(event, self._on_registry_updated)
         bus.async_listen(EVENT_KEY, self._on_frame)
         bus.async_listen(EVENT_HELLO, self._on_frame)
         bus.async_listen(EVENT_PAIR_REQUEST, self._on_pair_request)
@@ -122,8 +144,8 @@ class Hub:
         seen = self.seen.get(mac)
         return seen is not None and dt_util.utcnow() - seen < AWAKE_FOR
 
-    def _data(self) -> dict[str, dict[str, int]]:
-        return {"counters": self.counters, "epochs": self.epochs}
+    def _data(self) -> dict[str, Any]:
+        return {"counters": self.counters, "epochs": self.epochs, "settings": self.settings}
 
     def _save_soon(self) -> None:
         self._store.async_delay_save(self._data, 10)
@@ -187,11 +209,15 @@ class Hub:
     async def bridge_online(self, prefix: str) -> None:
         """A bridge (re)connected: a new epoch, then every paired remote's key."""
         self._epoch_sent.discard(prefix)
-        self._ready_shown.discard(prefix)
+        for sent in [k for k in self._sent if k[0] == prefix]:
+            del self._sent[sent]
         if not await self._ensure_epoch(prefix):
             return
         for mac, key in self.paired().items():
             await self.provision(mac, key, [prefix])
+        if self.owns_screen():
+            for mac in self.paired():
+                await self.draw(mac)
 
     async def forget(self, mac: str) -> None:
         for prefix in self.bridges():
@@ -199,6 +225,9 @@ class Hub:
         self.counters.pop(mac, None)
         self.seen.pop(mac, None)
         self.heard_by.pop(mac, None)
+        self.settings.pop(mac, None)
+        self.screens.pop(mac, None)
+        self._sent = {k: v for k, v in self._sent.items() if k[1] != mac}
         self._save_soon()
 
     async def pair_reply(self, mac: str, remote_public: bytes, ha_public: bytes) -> int:
@@ -223,6 +252,115 @@ class Hub:
         if not await self._call(prefix, ACTION_SEND_IR, data):
             raise HomeAssistantError(f"Bridge {self.heard_by[mac]} couldn't take the IR code")
 
+    # --- Screens ------------------------------------------------------------
+
+    def owns_screen(self) -> bool:
+        return not self.hass.services.has_service("script", PACKAGE_RENDERER)
+
+    def remote_settings(self, mac: str) -> dict[str, int]:
+        stored = self.settings.get(mac, {})
+        return {k: int(stored.get(k, spec[5])) for k, spec in SETTINGS.items()}
+
+    async def set_setting(self, mac: str, key: str, value: int) -> None:
+        _, _, lo, hi, _, _ = SETTINGS[key]
+        self.settings.setdefault(mac, {})[key] = max(lo, min(hi, int(value)))
+        self._save_soon()
+        async_dispatcher_send(self.hass, SIGNAL_REMOTE_STATUS.format(mac))
+        await self.draw(mac)
+
+    def root(self) -> menus.Menu:
+        if self._root is None:
+            def name_of(entity_id: str) -> str:
+                state = self.hass.states.get(entity_id)
+                return state.name if state else entity_id
+            self._root = menus.build(self.hass, name_of)
+        return self._root
+
+    def screen(self, mac: str) -> RemoteScreen:
+        if mac not in self.screens:
+            self.screens[mac] = RemoteScreen(self.hass)
+        return self.screens[mac]
+
+    def _targets(self, mac: str) -> list[str]:
+        """The bridge that last heard the remote, else every bridge."""
+        bridge = self.heard_by.get(mac)
+        return [bridge_prefix(bridge)] if bridge else self.bridges()
+
+    async def _send(self, mac: str, call: Call, force: bool = False) -> None:
+        """A screen action to the remote's bridge. Bridge firmware 0.3 and later has a
+        *_for twin of each, which keeps a screen per remote; older ones share one."""
+        action, data = call
+        for prefix in self._targets(mac):
+            per_remote = self.hass.services.has_service(ESPHOME, f"{prefix}_{action}_for")
+            name, payload = (f"{action}_for", {"remote": mac, **data}) if per_remote else (action, dict(data))
+            key = (prefix, mac, action)
+            if not force and self._sent.get(key) == payload:
+                continue
+            if await self._ensure_epoch(prefix) and await self._call(prefix, name, payload):
+                if action != "show_message":
+                    self._sent[key] = payload
+
+    async def draw(self, mac: str) -> None:
+        """Send the remote's screen, hotkeys and settings; unchanged parts are skipped."""
+        if mac not in self.paired():
+            return
+        settings = self.remote_settings(mac)
+        calls = self.screen(mac).render(self.root(), settings)
+        calls.append(("set_config", {"brightness": settings["brightness"],
+                                     "backlight_seconds": settings["screen_off"],
+                                     "sleep_seconds": settings["sleep"]}))
+        for call in calls:
+            await self._send(mac, call)
+        self._watch()
+
+    async def key(self, mac: str, key: str, event: str) -> None:
+        fx = self.screen(mac).key(self.root(), key, event, self.remote_settings(mac))
+        for k, value in fx.settings.items():
+            self.settings.setdefault(mac, {})[k] = value
+        if fx.settings:
+            self._save_soon()
+            async_dispatcher_send(self.hass, SIGNAL_REMOTE_STATUS.format(mac))
+        if fx.redraw or fx.settings:
+            await self.draw(mac)
+        if fx.message:
+            await self._send(mac, ("show_message", {"message": fx.message, "seconds": 3}))
+        for domain, service, data in fx.actions:
+            try:
+                await self.hass.services.async_call(domain, service, data, blocking=True)
+            except HomeAssistantError as err:
+                _LOGGER.warning("Remote %s: %s.%s failed: %s", mac, domain, service, err)
+                await self._send(mac, ("show_message", {"message": f"Failed: {err}"[:60], "seconds": 3}))
+        # State changes redraw through _watch; an action that changed nothing still
+        # leaves the screen right.
+
+    def _watch(self) -> None:
+        """Follow the states of every entity on any remote's screen."""
+        root = self.root()
+        wanted = frozenset(e for mac in self.paired() for e in self.screen(mac).visible_entities(root))
+        if wanted == self._watched:
+            return
+        if self._unsub_states:
+            self._unsub_states()
+            self._unsub_states = None
+        self._watched = wanted
+        if wanted:
+            self._unsub_states = async_track_state_change_event(self.hass, list(wanted), self._on_state)
+
+    @callback
+    def _on_state(self, event: Event) -> None:
+        self.hass.async_create_task(self._redraw.async_call(), eager_start=False)
+
+    @callback
+    def _on_registry_updated(self, event: Event) -> None:
+        self._root = None
+        self.hass.async_create_task(self._redraw.async_call(), eager_start=False)
+
+    async def _redraw_all(self) -> None:
+        if not self.owns_screen():
+            return
+        for mac in self.paired():
+            await self.draw(mac)
+
     # --- Events -------------------------------------------------------------
 
     @callback
@@ -242,12 +380,23 @@ class Hub:
             self.counters[mac] = counter
             self._save_soon()
         async_dispatcher_send(self.hass, SIGNAL_REMOTE_SEEN.format(mac))
-        prefix = bridge_prefix(str(bridge))
-        if (event.event_type == EVENT_HELLO and prefix not in self._ready_shown
-                and not self.hass.services.has_service("script", PACKAGE_RENDERER)):
-            # The bridge caches it and answers every hello with it.
-            self._ready_shown.add(prefix)
-            self.hass.async_create_task(self._call(prefix, "show_status", READY_SCREEN), eager_start=False)
+        if event.event_type == EVENT_HELLO:
+            battery = data.get("battery")
+            self.status[mac] = {
+                "battery": int(battery) if isinstance(battery, (int, float)) and 0 <= battery <= 100 else None,
+                "charging": data.get("charging") in (True, "true", "True", 1),
+            }
+            async_dispatcher_send(self.hass, SIGNAL_REMOTE_STATUS.format(mac))
+        if not self.owns_screen():
+            return
+        if event.event_type == EVENT_KEY:
+            self.hass.async_create_task(
+                self.key(mac, str(data.get("key", "")), str(data.get("type", ""))), eager_start=False
+            )
+        else:
+            # Usually a no-op: the bridge answered from its cache. Draws when the remote
+            # moved to another bridge, or nothing was sent yet.
+            self.hass.async_create_task(self.draw(mac), eager_start=False)
 
     @callback
     def _on_pair_request(self, event: Event) -> None:
