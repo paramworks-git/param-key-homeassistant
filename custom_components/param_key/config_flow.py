@@ -1,9 +1,9 @@
 """Setting up bridges and pairing remotes (docs/protocol.md in param-key).
 
-A bridge is found by its ESPHome project over mDNS. Adding it lets it send key presses to
-Home Assistant (ESPHome's "Allow the device to perform Home Assistant actions"), which only works
-once the ESPHome device itself is added. It becomes a bridge entry, which also keeps the
-integration loaded so remotes asking to pair are noticed.
+A bridge is found by its ESPHome project over mDNS and becomes a bridge entry once its ESPHome
+device is added; the entry keeps the integration loaded so remotes asking to pair are noticed.
+The bridge's events (esphome.*) reach HA without ESPHome's "Allow the device to perform Home
+Assistant actions", which stays off: the bridge never calls HA actions.
 
 A remote asking to pair shows up as discovered (the hub starts the flow), or
 the user adds the integration while the remote asks. HA answers through the
@@ -31,7 +31,6 @@ from .const import (
     CONF_MAC,
     CONF_REMOTE,
     DOMAIN,
-    ESPHOME_ALLOW_ACTIONS,
 )
 from .hub import async_get_hub
 
@@ -62,14 +61,9 @@ class ParamKeyConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_bridge(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            esphome = self._esphome_entry()
-            if esphome is None:
+            if self._esphome_entry() is None:
                 errors["base"] = "esphome_first"
             else:
-                if not esphome.options.get(ESPHOME_ALLOW_ACTIONS):
-                    self.hass.config_entries.async_update_entry(
-                        esphome, options={**esphome.options, ESPHOME_ALLOW_ACTIONS: True}
-                    )
                 return self.async_create_entry(
                     title=f"Bridge {self._bridge}", data={CONF_BRIDGE: self._bridge, CONF_MAC: self._bridge_mac}
                 )

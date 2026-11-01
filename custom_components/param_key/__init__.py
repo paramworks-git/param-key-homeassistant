@@ -83,8 +83,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hub = await async_get_hub(hass)
     if CONF_BRIDGE in entry.data:
-        # A bridge: give it the remotes' keys now, in case it connected before it was
-        # allowed to tell HA so. Remotes asking to pair are noticed from here on.
+        # A bridge: give it the remotes' keys now, in case it connected before this
+        # entry existed. Remotes asking to pair are noticed from here on.
         prefix = bridge_prefix(entry.data[CONF_BRIDGE])
         for mac, key in hub.paired().items():
             await hub.provision(mac, key, [prefix])

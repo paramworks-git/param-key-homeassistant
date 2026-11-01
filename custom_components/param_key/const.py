@@ -23,8 +23,6 @@ CONF_BRIDGE = "bridge"  # a bridge entry: its ESPHome node name
 CONF_MAC = "mac"
 # The bridge firmware's ESPHome project, advertised over mDNS (manifest.json zeroconf).
 BRIDGE_PROJECT = "paramworks.param-key-bridge"
-# ESPHome's "Allow the device to perform Home Assistant actions" option.
-ESPHOME_ALLOW_ACTIONS = "allow_service_calls"
 CONF_KEY = "key"
 CONF_FIRMWARE = "firmware"
 

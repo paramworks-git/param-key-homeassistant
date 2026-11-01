@@ -19,7 +19,7 @@
       },
       "bridge": {
         "title": "PARAM KEY bridge",
-        "description": "Let **{name}** send key presses from your PARAM KEY remotes to Home Assistant? This turns on \"Allow the device to perform Home Assistant actions\" for its ESPHome device."
+        "description": "Use **{name}** to connect your PARAM KEY remotes to Home Assistant? Add its ESPHome device first: it's under Discovered too, named like this bridge."
       }
     },
     "error": {

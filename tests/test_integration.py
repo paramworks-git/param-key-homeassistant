@@ -239,7 +239,7 @@ async def main() -> None:
     check("brand icon ships with the integration", integration.has_branding
           and (Path(integration.file_path) / "brand" / "icon.png").is_file())
 
-    # --- A bridge on the network: found by its ESPHome project, then allowed to send events
+    # --- A bridge on the network: found by its ESPHome project, set up once its ESPHome device is
     matchers = (await loader.async_get_zeroconf(hass)).get("_esphomelib._tcp.local.", [])
     check("zeroconf matches the bridge project", any(
         m.get("domain") == "param_key" and m.get("properties", {}).get("project_name") == "paramworks.param-key-bridge"
@@ -264,8 +264,8 @@ async def main() -> None:
     await hass.async_block_till_done()
     check("bridge entry created", r["type"] == FlowResultType.CREATE_ENTRY
           and r["data"] == {"bridge": "param-key-bridge-00000c", "mac": "02:00:00:00:00:0c"}, r)
-    check("bridge may now send events", hass.config_entries.async_get_entry(esphome.entry_id)
-          .options.get("allow_service_calls") is True)
+    check("ESPHome actions stay off", "allow_service_calls"
+          not in hass.config_entries.async_get_entry(esphome.entry_id).options)
     r = await flows.async_init("param_key", context={"source": "zeroconf"}, data=info)
     check("same bridge again -> already set up", r["type"] == FlowResultType.ABORT
           and r["reason"] == "already_configured", r)

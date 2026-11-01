@@ -1,8 +1,7 @@
 # PARAM KEY: Home Assistant side (protocol: docs/protocol.md in param-key).
 #
 # Install: copy or symlink into the HA config's packages/ directory. Needs the
-# bridge adopted in ESPHome with "Allow the device to perform Home Assistant
-# actions" turned on. The bridge's device name is param-key-bridge, so its actions are
+# bridge added as an ESPHome device. The bridge's device name is param-key-bridge, so its actions are
 # esphome.param_key_bridge_*.
 #
 # Modes (input_select.param_key_mode, hold home on the remote to pick one):
