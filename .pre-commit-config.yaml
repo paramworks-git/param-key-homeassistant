@@ -1,6 +1,14 @@
-# Secret scan before every commit: pip install pre-commit && pre-commit install
+# Before every commit: secrets (gitleaks) and private names (patterns kept outside the repo, see
+# .github/scripts/private_names.py). Set up with: pip install pre-commit && pre-commit install
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.2
     hooks:
       - id: gitleaks
+  - repo: local
+    hooks:
+      - id: private-names
+        name: private names
+        entry: python3 .github/scripts/private_names.py
+        language: system
+        types: [file]

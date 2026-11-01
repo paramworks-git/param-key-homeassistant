@@ -1,0 +1,24 @@
+# Tag vX.Y.Z on main, matching "version" in custom_components/param_key/manifest.json: creates
+# the GitHub Release that HACS offers as that version.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Tag matches the manifest version
+        run: |
+          version=$(python3 -c 'import json;print(json.load(open("custom_components/param_key/manifest.json"))["version"])')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, manifest $version"; exit 1; }
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "PARAM KEY $GITHUB_REF_NAME" --generate-notes

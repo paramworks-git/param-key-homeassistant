@@ -1,0 +1,54 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly: catches Home Assistant or HACS changes
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    name: hassfest (Home Assistant)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: home-assistant/actions/hassfest@50baf3a307f87100cf550d4ae127746595030d5d  # 2026-10-12
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa  # main, 2026-06-08
+        with:
+          category: integration
+          # No entry in home-assistant/brands yet: the icon comes with the brand mark.
+          ignore: brands
+
+  tests:
+    name: Package and integration tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: HOST_DIR="$GITHUB_WORKSPACE" ./run_tests.sh
+
+  guard:
+    name: Public repository guard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Secrets (gitleaks, full history)
+        run: |
+          curl -sSL -o /tmp/gl.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
+          echo "6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee  /tmp/gl.tgz" | sha256sum -c -
+          tar -xzf /tmp/gl.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --no-banner --redact
+      - name: Real MAC addresses, image and PDF metadata
+        run: |
+          sudo apt-get install -y -qq qpdf >/dev/null
+          python3 .github/scripts/guard.py

@@ -12,12 +12,19 @@ EVENT_BRIDGE_ONLINE = "esphome.param_key_bridge_online"
 
 # Bridge actions: esphome.<bridge>_<action>. A bridge is any ESPHome device
 # that offers set_remote.
+ACTION_SET_EPOCH = "set_epoch"
 ACTION_SET_REMOTE = "set_remote"
 ACTION_FORGET_REMOTE = "forget_remote"
 ACTION_PAIR_REPLY = "pair_reply"
 ACTION_SEND_IR = "send_ir"
 
 CONF_REMOTE = "remote"
+CONF_BRIDGE = "bridge"  # a bridge entry: its ESPHome node name
+CONF_MAC = "mac"
+# The bridge firmware's ESPHome project, advertised over mDNS (manifest.json zeroconf).
+BRIDGE_PROJECT = "paramworks.param-key-bridge"
+# ESPHome's "Allow the device to perform Home Assistant actions" option.
+ESPHOME_ALLOW_ACTIONS = "allow_service_calls"
 CONF_KEY = "key"
 CONF_FIRMWARE = "firmware"
 
@@ -28,6 +35,6 @@ AWAKE_FOR = timedelta(seconds=65)
 PAIR_REQUEST_FRESH = timedelta(minutes=2)
 
 # Most IR timings one packet carries (MAX_IR_TIMINGS in pk_protocol.h).
-MAX_IR_TIMINGS = 726
+MAX_IR_TIMINGS = 725
 
 SIGNAL_REMOTE_SEEN = f"{DOMAIN}_remote_seen_{{}}"

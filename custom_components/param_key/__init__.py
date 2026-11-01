@@ -22,8 +22,8 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_KEY, CONF_REMOTE, DOMAIN
-from .hub import async_get_hub
+from .const import CONF_BRIDGE, CONF_KEY, CONF_REMOTE, DOMAIN
+from .hub import async_get_hub, bridge_prefix
 from .ir import PROTOCOLS, build_command, code_int
 
 PLATFORMS = ["infrared"]
@@ -82,16 +82,26 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hub = await async_get_hub(hass)
+    if CONF_BRIDGE in entry.data:
+        # A bridge: give it the remotes' keys now, in case it connected before it was
+        # allowed to tell HA so. Remotes asking to pair are noticed from here on.
+        prefix = bridge_prefix(entry.data[CONF_BRIDGE])
+        for mac, key in hub.paired().items():
+            await hub.provision(mac, key, [prefix])
+        return True
     await hub.provision(entry.data[CONF_REMOTE], entry.data[CONF_KEY])
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    if CONF_BRIDGE in entry.data:
+        return True
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Removed in HA: take its key off the bridges, so it can do nothing more."""
-    hub = await async_get_hub(hass)
-    await hub.forget(entry.data[CONF_REMOTE])
+    if CONF_REMOTE in entry.data:
+        hub = await async_get_hub(hass)
+        await hub.forget(entry.data[CONF_REMOTE])

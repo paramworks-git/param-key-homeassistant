@@ -1,11 +1,13 @@
 {
   "config": {
-    "flow_title": "PARAM KEY remote {name}",
+    "flow_title": "PARAM KEY {name}",
     "step": {
       "user": {
         "title": "Pair a PARAM KEY remote",
         "description": "A new remote starts pairing on its own. To pair one again, hold home and back for 5 seconds. When its screen says \"Pair with Home Assistant\", wait a few seconds and select Submit.",
-        "data": {"remote": "Remote"}
+        "data": {
+          "remote": "Remote"
+        }
       },
       "discovery_confirm": {
         "title": "Pair a PARAM KEY remote",
@@ -14,17 +16,24 @@
       "pair": {
         "title": "Check the code",
         "description": "Within a few seconds the remote shows a code. Confirm only if it is **{code}**. If it shows another code, close this and hold home and back on the remote for 5 seconds to start over: someone else answered it."
+      },
+      "bridge": {
+        "title": "PARAM KEY bridge",
+        "description": "Let **{name}** send key presses from your PARAM KEY remotes to Home Assistant? This turns on \"Allow the device to perform Home Assistant actions\" for its ESPHome device."
       }
     },
     "error": {
-      "no_remote": "No remote is asking to pair yet. Check that its screen says \"Pair with Home Assistant\", wait a few seconds and try again."
+      "no_remote": "No remote is asking to pair yet. Check that its screen says \"Pair with Home Assistant\", wait a few seconds and try again.",
+      "esphome_first": "Add the ESPHome device first: it's under Discovered in Settings → Devices & services, named like this bridge. Then select Submit again."
     },
     "abort": {
       "already_in_progress": "This remote is already being paired.",
       "request_expired": "The remote stopped asking to pair. Hold home and back on it for 5 seconds and try again.",
       "bad_key": "The remote sent an invalid key. Hold home and back on it for 5 seconds and try again.",
-      "no_bridge": "No bridge took the reply. Check that a PARAM KEY bridge is online, with \"Allow the device to perform Home Assistant actions\" turned on.",
-      "paired_again": "The remote is paired again with a new key."
+      "no_bridge": "No bridge took the reply. Check that a PARAM KEY bridge is online and added to PARAM KEY (Settings → Devices & services).",
+      "paired_again": "The remote is paired again with a new key.",
+      "already_configured": "This bridge is already set up.",
+      "not_a_bridge": "This device doesn't identify itself as a PARAM KEY bridge."
     }
   },
   "services": {
@@ -32,17 +41,50 @@
       "name": "Send IR code",
       "description": "Sends an IR code from a remote's IR LED. The remote must be awake (a key press or being picked up wakes it).",
       "fields": {
-        "remote": {"name": "Remote", "description": "MAC of the remote (the key event's remote), instead of entity_id."},
-        "entity_id": {"name": "Remote IR entity", "description": "The remote's IR emitter entity."},
-        "protocol": {"name": "Protocol", "description": "nec, samsung, sony, rc5, rc6, pronto or raw."},
-        "address": {"name": "Address", "description": "Device address (nec, samsung, sony, rc5, rc6). Decimal or 0x hex."},
-        "command": {"name": "Command", "description": "Command code (nec, samsung, sony, rc5, rc6). Decimal or 0x hex."},
-        "address_bits": {"name": "Sony address bits", "description": "5 (SIRC-12), 8 (SIRC-15) or 13 (SIRC-20). Default 5."},
-        "toggle": {"name": "Toggle bit", "description": "RC5/RC6 toggle bit, 0 or 1."},
-        "repeat": {"name": "Repeats", "description": "Extra repeats of the code. Default 0, or 2 for Sony."},
-        "pronto": {"name": "Pronto code", "description": "Learned Pronto hex, starting 0000."},
-        "timings": {"name": "Raw timings", "description": "Microseconds, positive = carrier on, negative = off."},
-        "carrier": {"name": "Carrier", "description": "Carrier frequency in Hz for raw timings. Default 38000."}
+        "remote": {
+          "name": "Remote",
+          "description": "MAC of the remote (the key event's remote), instead of entity_id."
+        },
+        "entity_id": {
+          "name": "Remote IR entity",
+          "description": "The remote's IR emitter entity."
+        },
+        "protocol": {
+          "name": "Protocol",
+          "description": "nec, samsung, sony, rc5, rc6, pronto or raw."
+        },
+        "address": {
+          "name": "Address",
+          "description": "Device address (nec, samsung, sony, rc5, rc6). Decimal or 0x hex."
+        },
+        "command": {
+          "name": "Command",
+          "description": "Command code (nec, samsung, sony, rc5, rc6). Decimal or 0x hex."
+        },
+        "address_bits": {
+          "name": "Sony address bits",
+          "description": "5 (SIRC-12), 8 (SIRC-15) or 13 (SIRC-20). Default 5."
+        },
+        "toggle": {
+          "name": "Toggle bit",
+          "description": "RC5/RC6 toggle bit, 0 or 1."
+        },
+        "repeat": {
+          "name": "Repeats",
+          "description": "Extra repeats of the code. Default 0, or 2 for Sony."
+        },
+        "pronto": {
+          "name": "Pronto code",
+          "description": "Learned Pronto hex, starting 0000."
+        },
+        "timings": {
+          "name": "Raw timings",
+          "description": "Microseconds, positive = carrier on, negative = off."
+        },
+        "carrier": {
+          "name": "Carrier",
+          "description": "Carrier frequency in Hz for raw timings. Default 38000."
+        }
       }
     }
   }

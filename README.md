@@ -1,40 +1,48 @@
-# PARAM KEY for Home Assistant (param_key)
+# PARAM KEY for Home Assistant
 
-Home Assistant side of the PARAM KEY remote: turns key presses from the remote's bridge into
-actions and draws the remote's screen. The firmware for the remote and the bridge is in
-the param-key repository (`firmware/`).
+The Home Assistant integration for the [PARAM KEY](https://github.com/paramworks-git/param-key)
+remote: it sets up bridges, pairs remotes, and gives each remote's IR blaster to Home Assistant.
+The remote's firmware, the bridge and the installer are in
+[param-key](https://github.com/paramworks-git/param-key). MIT licensed (see [LICENSE](LICENSE)).
 
-Open firmware, open HA integration, documented hardware: MIT licensed (see [LICENSE](LICENSE)).
+Needs Home Assistant 2026.10 or later.
+
+## Install
+
+1. In HACS, open the menu (⋮) → **Custom repositories**, add
+   `https://github.com/paramworks-git/param-key-homeassistant` as type **Integration**, then
+   download **PARAM KEY** and restart Home Assistant.
+2. Install a bridge from the [installer](https://paramworks-git.github.io/param-key/) (Chrome or
+   Edge; any ESP32 board).
+3. In Settings → Devices & services, under **Discovered**:
+   - add the ESPHome device `param-key-bridge-…` (Home Assistant sets its encryption key);
+   - then add **PARAM KEY**, which lets the bridge send key presses to Home Assistant.
+4. Switch the remote on. It appears under Discovered as a PARAM KEY remote: add it, and confirm
+   only if the 6-digit code matches the one on the remote's screen.
+
+A remote that is already paired can be paired again by holding **home** and **back** for 5
+seconds. Removing a remote in Home Assistant takes its key off the bridges, so it can do nothing
+more until it is paired again.
+
+## IR
+
+Each remote is a device with an **IR** entity (Home Assistant's infrared platform). Home
+Assistant's IR integrations (LG, Samsung, Marantz and others) can use it as their emitter, and the
+`param_key.send_ir` action sends NEC, Samsung, Sony, RC5, RC6, Pronto or raw codes. The remote
+sends IR only while it's awake (after a key press, or being picked up), so IR suits key presses
+rather than automations that run while it sleeps.
 
 ## Status
 
 | Part | State |
 |---|---|
-| `packages/param_key.yaml` | Working HA package (the key map, modes, screen renderer, battery sensors). The device entities in it are examples: change them to yours |
-| `custom_components/param_key/` | Pairing (each remote a device; only paired remotes are heard), and each remote's IR LED as an HA infrared emitter. Next: the key map, modes and screen renderer move here from the package |
+| Integration | Bridges, pairing, security, IR. Next: menus and key mapping from labels, and the screens, so that no YAML is needed |
+| `packages/param_key.yaml` | The current key map, modes, screen renderer and battery sensors, as a YAML package for advanced setups (below). Its devices are examples |
 
-Needs Home Assistant 2026.10 or later, and bridge and remote firmware with protocol v2
-(param-key).
+Without the package, a paired remote shows "Ready" and its keys arrive as
+`esphome.param_key_key` events, which automations can use.
 
-## Install (integration)
-
-1. Copy `custom_components/param_key/` into your HA config's `custom_components/`
-   folder (or add this repository to HACS) and restart HA.
-2. Settings → Devices & services → **Add integration** → PARAM KEY, with a remote
-   on its "Pair with Home Assistant" screen. A new remote shows it on its own; hold
-   **home** and **back** for 5 seconds to pair one again. Once the integration is
-   set up, further remotes appear there as discovered.
-3. The remote shows a 6-digit code. Confirm it only if HA shows the same one.
-
-Each remote becomes a device with an **IR** entity (HA's infrared platform). It is
-available while the remote is awake: the remote can only send IR then, so IR suits
-key presses, not automations that run while it sleeps. HA's IR integrations (LG,
-Samsung, Marantz and others) can use it as their emitter.
-
-Removing a remote in HA takes its key off the bridges, so it can do nothing more
-until it is paired again.
-
-## Install (package)
+## Advanced: the YAML package
 
 1. Copy `packages/param_key.yaml` into your HA config's
    `packages/` folder. Packages have to be enabled in `configuration.yaml`:
@@ -44,9 +52,10 @@ until it is paired again.
    ```
 2. Restart HA, or for later changes run Developer tools → YAML → **All YAML
    configuration**.
-3. The bridge's actions are named after its device name: `param-key-bridge` gives
-   `esphome.param_key_bridge_show_status` and so on. If you rename the bridge, rename the
-   actions in the package to match.
+3. The package draws the screen through one bridge's actions, written as
+   `esphome.param_key_bridge_show_status` and so on. A bridge from the installer has the end of
+   its MAC in its name (`param-key-bridge-a1b2c3` gives `esphome.param_key_bridge_a1b2c3_show_status`):
+   replace `param_key_bridge_` in the package with your bridge's name, `-` as `_`, plus `_`.
 
 Reset the remote. Within a second, "Waiting for bridge" should change to HA's Media
 screen.
@@ -161,5 +170,10 @@ firmware and the integration are both tested against it, so they agree on
 pairing. Copy it again when the protocol changes.
 
 If the Docker daemon runs on another host, set `HOST_DIR` to this directory as that host sees it.
-Install the secret scan before committing: `pre-commit install` (gitleaks). Keep your own
-entity IDs and anything house-specific in a local copy outside this repository.
+Run `pre-commit install` once: it checks every commit for secrets (gitleaks) and for names listed
+in `~/.config/paramworks/private-patterns.txt`, if you keep one. Keep your own entity IDs and
+anything house-specific in a local copy outside this repository.
+
+Every push runs hassfest, the HACS checks, these tests and a scan for secrets, real MAC
+addresses and file metadata (`.github/workflows/validate.yml`). To release, set `version` in
+`manifest.json` and push a matching tag `vX.Y.Z`: the GitHub Release becomes that version in HACS.

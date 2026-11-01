@@ -8,12 +8,14 @@ inside the official HA container (see run_tests.sh).
 """
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 import json
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+from types import MappingProxyType
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -24,6 +26,7 @@ from homeassistant.core import ServiceCall
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
@@ -72,7 +75,7 @@ async def main() -> None:
     await hass.async_start()
 
     # A v2 bridge (records calls) and an old bridge without set_remote.
-    for action in ["set_remote", "forget_remote", "pair_reply", "send_ir", "show_status"]:
+    for action in ["set_epoch", "set_remote", "forget_remote", "pair_reply", "send_ir", "show_status"]:
         async def record(call: ServiceCall, a=action) -> None:
             calls.append((a, dict(call.data)))
         hass.services.async_register("esphome", f"test_bridge_{action}", record)
@@ -133,6 +136,11 @@ async def main() -> None:
     entry = hass.config_entries.async_entries("param_key")[0]
     check("bridge gets the key, floor 0",
           of("set_remote") == [{"remote": MAC, "key": key.hex(), "floor": 0}], of("set_remote"))
+    names = [a for a, _ in calls]
+    minutes = int((dt_util.utcnow() - datetime(2026, 1, 1, tzinfo=UTC)).total_seconds() // 60)
+    epoch1 = of("set_epoch")[0]["epoch"] if of("set_epoch") else 0
+    check("an epoch first, then the key", names.index("set_epoch") < names.index("set_remote")
+          and len(of("set_epoch")) == 1 and minutes <= epoch1 <= 0xFFFFFF, calls)
     ent = er.async_get(hass).async_get_entity_id("infrared", "param_key", f"{MAC}_ir")
     check("IR emitter entity", ent is not None, ent)
     check("asleep -> unavailable", hass.states.get(ent).state == "unavailable", hass.states.get(ent))
@@ -140,9 +148,18 @@ async def main() -> None:
     # --- Counters and liveness
     await frame("key", 7)
     check("frame -> available", hass.states.get(ent).state != "unavailable", hass.states.get(ent))
+    calls.clear()
     await frame("hello", 3)
+    await frame("hello", 4)
+    check("no package: one ready screen per bridge", [d["title"] for d in of("show_status")] == ["Ready"], calls)
     hub = hass.data["param_key"]
     check("counter keeps the highest", hub.counters.get(MAC) == 7, hub.counters)
+    hass.services.async_register("script", "param_key_render", lambda call: None)
+    hub._ready_shown.clear()
+    calls.clear()
+    await frame("hello", 5)
+    check("package installed: it draws the screen", of("show_status") == [], calls)
+    hass.services.async_remove("script", "param_key_render")
     await frame("key", 99, mac="02:00:00:00:00:0B")
     check("unpaired remote ignored", "02:00:00:00:00:0B" not in hub.counters and "02:00:00:00:00:0B" not in hub.seen)
     calls.clear()
@@ -150,6 +167,13 @@ async def main() -> None:
     await hass.async_block_till_done()
     check("bridge online -> key, floor past the last counter",
           of("set_remote") == [{"remote": MAC, "key": key.hex(), "floor": 8}], of("set_remote"))
+    names = [a for a, _ in calls]
+    check("bridge online -> a higher epoch, before the key",
+          len(of("set_epoch")) == 1 and of("set_epoch")[0]["epoch"] > epoch1
+          and names.index("set_epoch") < names.index("set_remote"), calls)
+    stored = await hub._store.async_load()
+    check("epoch saved before the bridge got it",
+          stored and stored["epochs"].get("test_bridge") == of("set_epoch")[0]["epoch"], stored)
 
     # --- IR
     from infrared_protocols.commands.nec import NECCommand  # noqa: E402
@@ -210,6 +234,37 @@ async def main() -> None:
     await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
     check("remove -> forget_remote", of("forget_remote") == [{"remote": MAC}], calls)
+
+    # --- A bridge on the network: found by its ESPHome project, then allowed to send events
+    matchers = (await loader.async_get_zeroconf(hass)).get("_esphomelib._tcp.local.", [])
+    check("zeroconf matches the bridge project", any(
+        m.get("domain") == "param_key" and m.get("properties", {}).get("project_name") == "paramworks.param-key-bridge"
+        for m in matchers), matchers)
+    info = ZeroconfServiceInfo(
+        ip_address=ip_address("192.0.2.10"), ip_addresses=[ip_address("192.0.2.10")], port=6053,
+        hostname="param-key-bridge-00000c.local.", type="_esphomelib._tcp.local.",
+        name="param-key-bridge-00000c._esphomelib._tcp.local.",
+        properties={"mac": "02000000000c", "project_name": "paramworks.param-key-bridge"})
+    r = await flows.async_init("param_key", context={"source": "zeroconf"}, data=info)
+    check("bridge discovered", r["type"] == FlowResultType.FORM and r["step_id"] == "bridge"
+          and r["description_placeholders"]["name"] == "param-key-bridge-00000c", r)
+    r = await flows.async_configure(r["flow_id"], {})
+    check("bridge waits for its ESPHome device", r["type"] == FlowResultType.FORM
+          and r["errors"] == {"base": "esphome_first"}, r)
+    esphome = config_entries.ConfigEntry(
+        data={"host": "192.0.2.10"}, discovery_keys=MappingProxyType({}), domain="esphome", minor_version=1,
+        options={}, source="zeroconf", subentries_data=None, title="param-key-bridge-00000c",
+        unique_id="02:00:00:00:00:0c", version=1)
+    hass.config_entries._entries[esphome.entry_id] = esphome
+    r = await flows.async_configure(r["flow_id"], {})
+    await hass.async_block_till_done()
+    check("bridge entry created", r["type"] == FlowResultType.CREATE_ENTRY
+          and r["data"] == {"bridge": "param-key-bridge-00000c", "mac": "02:00:00:00:00:0c"}, r)
+    check("bridge may now send events", hass.config_entries.async_get_entry(esphome.entry_id)
+          .options.get("allow_service_calls") is True)
+    r = await flows.async_init("param_key", context={"source": "zeroconf"}, data=info)
+    check("same bridge again -> already set up", r["type"] == FlowResultType.ABORT
+          and r["reason"] == "already_configured", r)
 
     await hass.async_stop()
     print(f"\n{len(failures)} failure(s)")

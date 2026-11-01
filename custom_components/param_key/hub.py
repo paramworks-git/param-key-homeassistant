@@ -8,8 +8,9 @@ remotes that ask to pair as discovered devices, and calls the bridges' actions
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 from typing import Any
 
@@ -27,6 +28,7 @@ from .const import (
     ACTION_FORGET_REMOTE,
     ACTION_PAIR_REPLY,
     ACTION_SEND_IR,
+    ACTION_SET_EPOCH,
     ACTION_SET_REMOTE,
     AWAKE_FOR,
     CONF_KEY,
@@ -46,6 +48,14 @@ _LOGGER = logging.getLogger(__name__)
 ESPHOME = "esphome"
 STORE_VERSION = 1
 MAX_REQUESTS = 20
+# Bridge epochs (docs/protocol.md, "Security"): 24-bit, never below the minutes since this date.
+EPOCH_BASE = datetime(2026, 1, 1, tzinfo=UTC)
+MAX_EPOCH = 0xFFFFFF
+# Until the integration draws screens itself: what a paired remote shows when the YAML
+# package (which has its own renderer, script.param_key_render) isn't installed.
+PACKAGE_RENDERER = "param_key_render"
+READY_SCREEN = {"mode": "PARAM KEY", "title": "Ready", "subtitle": "Paired with Home Assistant",
+                "value": -1, "value_label": ""}
 
 
 @dataclass
@@ -78,14 +88,20 @@ class Hub:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-        self._store: Store[dict[str, int]] = Store(hass, STORE_VERSION, f"{DOMAIN}.counters")
+        self._store: Store[dict[str, dict[str, int]]] = Store(hass, STORE_VERSION, f"{DOMAIN}.link")
         self.counters: dict[str, int] = {}  # MAC -> last counter HA saw
+        self.epochs: dict[str, int] = {}  # bridge action prefix -> last epoch HA gave it
+        self._epoch_sent: set[str] = set()  # bridges that have an epoch from this HA run
+        self._bridge_locks: dict[str, asyncio.Lock] = {}
+        self._ready_shown: set[str] = set()  # bridges that have the ready screen cached
         self.seen: dict[str, datetime] = {}  # MAC -> last frame
         self.heard_by: dict[str, str] = {}  # MAC -> bridge that heard the last frame
         self.requests: dict[str, PairRequest] = {}
 
     async def async_start(self) -> None:
-        self.counters = await self._store.async_load() or {}
+        stored = await self._store.async_load() or {}
+        self.counters = dict(stored.get("counters", {}))
+        self.epochs = dict(stored.get("epochs", {}))
         bus = self.hass.bus
         bus.async_listen(EVENT_KEY, self._on_frame)
         bus.async_listen(EVENT_HELLO, self._on_frame)
@@ -106,10 +122,16 @@ class Hub:
         seen = self.seen.get(mac)
         return seen is not None and dt_util.utcnow() - seen < AWAKE_FOR
 
+    def _data(self) -> dict[str, dict[str, int]]:
+        return {"counters": self.counters, "epochs": self.epochs}
+
+    def _save_soon(self) -> None:
+        self._store.async_delay_save(self._data, 10)
+
     def reset_counter(self, mac: str) -> None:
         """A new pairing: its counters start over."""
         self.counters.pop(mac, None)
-        self._store.async_delay_save(lambda: self.counters, 10)
+        self._save_soon()
 
     # --- Bridges ------------------------------------------------------------
 
@@ -134,11 +156,42 @@ class Hub:
             return False
         return True
 
+    async def _ensure_epoch(self, prefix: str) -> bool:
+        """Give a bridge its send epoch for this connection, once, before any key.
+
+        A new epoch is higher than every one before it, and is saved before the bridge
+        sees it: a bridge that was erased and reflashed must never get one again.
+        """
+        async with self._bridge_locks.setdefault(prefix, asyncio.Lock()):
+            if prefix in self._epoch_sent:
+                return True
+            minutes = int((dt_util.utcnow() - EPOCH_BASE).total_seconds() // 60)
+            epoch = max(self.epochs.get(prefix, 0) + 1, minutes, 1)
+            if epoch > MAX_EPOCH:
+                _LOGGER.error("Bridge %s: epochs exhausted", prefix)
+                return False
+            self.epochs[prefix] = epoch
+            await self._store.async_save(self._data())
+            if not await self._call(prefix, ACTION_SET_EPOCH, {"epoch": epoch}):
+                return False
+            self._epoch_sent.add(prefix)
+            return True
+
     async def provision(self, mac: str, key: str, bridges: list[str] | None = None) -> None:
         """Give bridges a remote's key and the counter to accept from."""
         floor = self.counters.get(mac, -1) + 1
         for prefix in self.bridges() if bridges is None else bridges:
-            await self._call(prefix, ACTION_SET_REMOTE, {"remote": mac, "key": key, "floor": floor})
+            if await self._ensure_epoch(prefix):
+                await self._call(prefix, ACTION_SET_REMOTE, {"remote": mac, "key": key, "floor": floor})
+
+    async def bridge_online(self, prefix: str) -> None:
+        """A bridge (re)connected: a new epoch, then every paired remote's key."""
+        self._epoch_sent.discard(prefix)
+        self._ready_shown.discard(prefix)
+        if not await self._ensure_epoch(prefix):
+            return
+        for mac, key in self.paired().items():
+            await self.provision(mac, key, [prefix])
 
     async def forget(self, mac: str) -> None:
         for prefix in self.bridges():
@@ -146,7 +199,7 @@ class Hub:
         self.counters.pop(mac, None)
         self.seen.pop(mac, None)
         self.heard_by.pop(mac, None)
-        self._store.async_delay_save(lambda: self.counters, 10)
+        self._save_soon()
 
     async def pair_reply(self, mac: str, remote_public: bytes, ha_public: bytes) -> int:
         """Hand HA's public key to every bridge; returns how many took it."""
@@ -187,8 +240,14 @@ class Hub:
             return
         if counter > self.counters.get(mac, -1):
             self.counters[mac] = counter
-            self._store.async_delay_save(lambda: self.counters, 10)
+            self._save_soon()
         async_dispatcher_send(self.hass, SIGNAL_REMOTE_SEEN.format(mac))
+        prefix = bridge_prefix(str(bridge))
+        if (event.event_type == EVENT_HELLO and prefix not in self._ready_shown
+                and not self.hass.services.has_service("script", PACKAGE_RENDERER)):
+            # The bridge caches it and answers every hello with it.
+            self._ready_shown.add(prefix)
+            self.hass.async_create_task(self._call(prefix, "show_status", READY_SCREEN), eager_start=False)
 
     @callback
     def _on_pair_request(self, event: Event) -> None:
@@ -227,8 +286,8 @@ class Hub:
 
     @callback
     def _on_bridge_online(self, event: Event) -> None:
-        """A bridge (re)connected and has no keys: give it every paired remote's."""
+        """A bridge (re)connected and has no keys: a new epoch, then every paired remote's."""
         bridge = event.data.get("bridge")
-        bridges = [bridge_prefix(str(bridge))] if bridge else None
-        for mac, key in self.paired().items():
-            self.hass.async_create_task(self.provision(mac, key, bridges), eager_start=False)
+        prefixes = [bridge_prefix(str(bridge))] if bridge else self.bridges()
+        for prefix in prefixes:
+            self.hass.async_create_task(self.bridge_online(prefix), eager_start=False)
