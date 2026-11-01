@@ -4,6 +4,9 @@
   "after_dependencies": [
     "esphome"
   ],
+  "categories": [
+    "buttons_remotes"
+  ],
   "codeowners": [],
   "config_flow": true,
   "dependencies": [
@@ -14,7 +17,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/paramworks-git/param-key-homeassistant/issues",
   "requirements": [],
-  "version": "0.1.0",
+  "version": "0.1.1",
   "zeroconf": [
     {
       "type": "_esphomelib._tcp.local.",
