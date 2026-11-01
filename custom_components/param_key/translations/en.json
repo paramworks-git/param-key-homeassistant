@@ -87,5 +87,48 @@
         }
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Media setup",
+        "description": "What this remote controls in Media mode. Hold **home** on the remote to switch between Devices and Media. Leave out what you don't have.",
+        "data": {
+          "volume": "Volume",
+          "navigation": "Arrows, OK, back and home",
+          "players": "Players",
+          "hotkeys": "Hotkeys (up to 4)",
+          "power": "Power key switches",
+          "start": "Mode after saving"
+        },
+        "data_description": {
+          "volume": "The AVR or TV whose volume the volume and mute keys change, in every mode. Its inputs make the Source menu (the settings key in Media mode).",
+          "navigation": "A streamer's or TV's remote: Android TV Remote, Apple TV, Roku or Samsung Smart TV, or an LG webOS TV's media player.",
+          "players": "What the screen shows and the play, rewind, forward and stop keys control: whichever is playing.",
+          "hotkeys": "Scenes, scripts or buttons for the four keys under the screen in Media mode.",
+          "power": "The power key turns these off if any is on, otherwise on.",
+          "start": "The remote can switch any time by holding home."
+        }
+      },
+      "sources": {
+        "title": "Source menu",
+        "description": "The inputs to list when you press settings in Media mode.",
+        "data": {
+          "sources": "Sources"
+        }
+      }
+    },
+    "error": {
+      "nav_unsupported": "PARAM KEY doesn't know this device's commands. Choose an Android TV Remote, Apple TV, Roku or Samsung Smart TV remote, or an LG webOS TV.",
+      "too_many_hotkeys": "Choose at most 4 hotkeys."
+    }
+  },
+  "selector": {
+    "start": {
+      "options": {
+        "devices": "Devices",
+        "media": "Media"
+      }
+    }
   }
 }

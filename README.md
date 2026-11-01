@@ -56,7 +56,7 @@ The remote's screen lists what you labelled `remote`, by Area:
 | OK | Toggle, run a scene or script, play/pause a media player, or open a menu |
 | ◀ ▶ | Dimmer/brighter, fan slower/faster, cover position, volume |
 | back | Up one level |
-| home | Back to the top |
+| home | Back to the top (held: switch between Devices and Media) |
 | settings | Brightness, screen-off and sleep times (also on the remote's device page in HA) |
 | power | Turns off the lights in the current menu (at the top: all labelled lights) |
 
@@ -70,11 +70,24 @@ automations can give keys the menus don't use (volume, media keys) a job.
 Each remote has a screen of its own with bridge firmware 0.3.0 or later; with an older bridge, the
 remotes on it share one.
 
+## Media mode
+
+On the remote's page in Home Assistant (Settings → Devices & services → PARAM KEY → the remote →
+**Configure**), choose what it controls:
+
+- **Volume:** the AVR or TV for the volume and mute keys (in every mode). Its inputs make the
+  **Source menu**: press settings in Media mode, ▲ ▼ and OK to switch.
+- **Arrows, OK, back and home:** an Android TV Remote, Apple TV, Roku or Samsung Smart TV remote
+  entity, or an LG webOS TV.
+- **Players:** the screen shows what's playing on them, and ⏯ ⏪ ⏩ ⏹ control whichever plays.
+- **Hotkeys** (up to 4 scenes or scripts) and what the **power** key switches (all off if any is on,
+  else all on).
+
+**Hold home** on the remote to switch between Devices and Media; it remembers the mode.
+
 ## What's next
 
 - **Rooms:** with a bridge per room, the remote shows the Area it's in.
-- **Media setup:** a guided setup for TV, AVR and streamer keys, as an alternative to the
-  YAML package below.
 - **IR learning** (PARAM KEY v2, which has an IR receiver): point an old remote at it to copy a button.
 
 ## Advanced: the YAML package

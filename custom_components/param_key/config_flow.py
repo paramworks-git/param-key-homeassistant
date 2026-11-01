@@ -19,7 +19,15 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
@@ -33,10 +41,22 @@ from .const import (
     DOMAIN,
 )
 from .hub import async_get_hub
+from .media import nav_platform
 
 
 class ParamKeyConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return MediaSetupFlow()
+
+    @classmethod
+    @callback
+    def async_supports_options_flow(cls, config_entry: ConfigEntry) -> bool:
+        """Remotes have a Media setup; bridges have nothing to configure."""
+        return CONF_REMOTE in config_entry.data
 
     def __init__(self) -> None:
         self._mac: str | None = None
@@ -133,3 +153,66 @@ class ParamKeyConfigFlow(ConfigFlow, domain=DOMAIN):
         if self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, self._mac or ""):
             return " It is already paired; pairing it again gives it a new key."
         return ""
+
+
+class MediaSetupFlow(OptionsFlow):
+    """A remote's Media setup (media.py): what volume, arrows, players and power control."""
+
+    def __init__(self) -> None:
+        self._media: dict[str, Any] = {}
+        self._home = "devices"
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        current = dict(self.config_entry.options.get("media") or {})
+        if user_input is not None:
+            nav = user_input.get("navigation")
+            if nav and nav_platform(self.hass, nav) is None:
+                errors["navigation"] = "nav_unsupported"
+            if len(user_input.get("hotkeys") or []) > 4:
+                errors["hotkeys"] = "too_many_hotkeys"
+            if not errors:
+                self._home = user_input.get("start", "devices")
+                self._media = {k: user_input.get(k) or ([] if k in ("players", "hotkeys", "power") else None)
+                               for k in ("volume", "navigation", "players", "hotkeys", "power")}
+                self._media["sources"] = current.get("sources") or []
+                if self._source_list():
+                    return await self.async_step_sources()
+                return self._save()
+        schema = vol.Schema({
+            vol.Optional("volume"): EntitySelector(EntitySelectorConfig(domain="media_player")),
+            vol.Optional("navigation"): EntitySelector(EntitySelectorConfig(domain=["remote", "media_player"])),
+            vol.Optional("players"): EntitySelector(EntitySelectorConfig(domain="media_player", multiple=True)),
+            vol.Optional("hotkeys"): EntitySelector(
+                EntitySelectorConfig(domain=["scene", "script", "button", "input_button"], multiple=True)),
+            vol.Optional("power"): EntitySelector(
+                EntitySelectorConfig(domain=["media_player", "remote", "switch", "light"], multiple=True)),
+            vol.Required("start", default=self.config_entry.options.get("start", "devices")): SelectSelector(
+                SelectSelectorConfig(options=["devices", "media"], translation_key="start",
+                                     mode=SelectSelectorMode.LIST)),
+        })
+        suggested = {k: v for k, v in current.items() if v}
+        return self.async_show_form(
+            step_id="init", data_schema=self.add_suggested_values_to_schema(schema, user_input or suggested),
+            errors=errors,
+        )
+
+    def _source_list(self) -> list[str]:
+        state = self.hass.states.get(self._media.get("volume") or "")
+        return list(state.attributes.get("source_list") or []) if state else []
+
+    async def async_step_sources(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        available = self._source_list()
+        if user_input is not None:
+            chosen = user_input.get("sources") or []
+            self._media["sources"] = [s for s in available if s in chosen]
+            return self._save()
+        previous = [s for s in self._media.get("sources", []) if s in available]
+        schema = vol.Schema({
+            vol.Optional("sources", default=previous or available): SelectSelector(
+                SelectSelectorConfig(options=available, multiple=True, mode=SelectSelectorMode.LIST)),
+        })
+        return self.async_show_form(step_id="sources", data_schema=schema)
+
+    def _save(self) -> ConfigFlowResult:
+        return self.async_create_entry(data={"media": self._media, "start": self._home})

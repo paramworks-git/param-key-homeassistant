@@ -53,6 +53,7 @@ from .const import (
     SIGNAL_REMOTE_STATUS,
 )
 from . import menu as menus
+from .media import MediaConfig
 from .screen import SETTINGS, Call, RemoteScreen
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class Hub:
         self.settings: dict[str, dict[str, int]] = {}  # MAC -> remote settings (screen.SETTINGS)
         self.status: dict[str, dict[str, Any]] = {}  # MAC -> battery, charging from its last hello
         self.screens: dict[str, RemoteScreen] = {}
+        self.modes: dict[str, str] = {}  # MAC -> "devices" or "media", kept across restarts
         self._root: menus.Menu | None = None
         self._sent: dict[tuple[str, str, str], dict[str, Any]] = {}  # (bridge, MAC, action) -> data
         self._unsub_states: Any = None
@@ -121,6 +123,7 @@ class Hub:
         self.counters = dict(stored.get("counters", {}))
         self.epochs = dict(stored.get("epochs", {}))
         self.settings = {mac: dict(v) for mac, v in stored.get("settings", {}).items()}
+        self.modes = dict(stored.get("modes", {}))
         bus = self.hass.bus
         for event in (er.EVENT_ENTITY_REGISTRY_UPDATED, dr.EVENT_DEVICE_REGISTRY_UPDATED,
                       ar.EVENT_AREA_REGISTRY_UPDATED, lr.EVENT_LABEL_REGISTRY_UPDATED):
@@ -145,7 +148,7 @@ class Hub:
         return seen is not None and dt_util.utcnow() - seen < AWAKE_FOR
 
     def _data(self) -> dict[str, Any]:
-        return {"counters": self.counters, "epochs": self.epochs, "settings": self.settings}
+        return {"counters": self.counters, "epochs": self.epochs, "settings": self.settings, "modes": self.modes}
 
     def _save_soon(self) -> None:
         self._store.async_delay_save(self._data, 10)
@@ -226,6 +229,7 @@ class Hub:
         self.seen.pop(mac, None)
         self.heard_by.pop(mac, None)
         self.settings.pop(mac, None)
+        self.modes.pop(mac, None)
         self.screens.pop(mac, None)
         self._sent = {k: v for k, v in self._sent.items() if k[1] != mac}
         self._save_soon()
@@ -278,8 +282,22 @@ class Hub:
 
     def screen(self, mac: str) -> RemoteScreen:
         if mac not in self.screens:
-            self.screens[mac] = RemoteScreen(self.hass)
+            self.screens[mac] = RemoteScreen(self.hass, self.modes.get(mac, "devices"))
         return self.screens[mac]
+
+    async def apply_options(self, mac: str, start: str | None) -> None:
+        screen = self.screen(mac)
+        if start in ("devices", "media") and (start == "devices" or self.media(mac)):
+            screen.mode = self.modes[mac] = start
+            self._save_soon()
+        screen.home()
+        screen.picker_open = False
+        if self.owns_screen():
+            await self.draw(mac)
+
+    def media(self, mac: str) -> MediaConfig | None:
+        entry = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, mac)
+        return MediaConfig.from_options(dict(entry.options)) if entry else None
 
     def _targets(self, mac: str) -> list[str]:
         """The bridge that last heard the remote, else every bridge."""
@@ -293,7 +311,8 @@ class Hub:
         for prefix in self._targets(mac):
             per_remote = self.hass.services.has_service(ESPHOME, f"{prefix}_{action}_for")
             name, payload = (f"{action}_for", {"remote": mac, **data}) if per_remote else (action, dict(data))
-            key = (prefix, mac, action)
+            # Lists and status screens share the bridge's one screen slot.
+            key = (prefix, mac, "screen" if action in ("show_list", "show_status") else action)
             if not force and self._sent.get(key) == payload:
                 continue
             if await self._ensure_epoch(prefix) and await self._call(prefix, name, payload):
@@ -305,7 +324,7 @@ class Hub:
         if mac not in self.paired():
             return
         settings = self.remote_settings(mac)
-        calls = self.screen(mac).render(self.root(), settings)
+        calls = self.screen(mac).render(self.root(), settings, self.media(mac))
         calls.append(("set_config", {"brightness": settings["brightness"],
                                      "backlight_seconds": settings["screen_off"],
                                      "sleep_seconds": settings["sleep"]}))
@@ -314,7 +333,11 @@ class Hub:
         self._watch()
 
     async def key(self, mac: str, key: str, event: str) -> None:
-        fx = self.screen(mac).key(self.root(), key, event, self.remote_settings(mac))
+        screen = self.screen(mac)
+        fx = screen.key(self.root(), key, event, self.remote_settings(mac), self.media(mac))
+        if self.modes.get(mac, "devices") != screen.mode:
+            self.modes[mac] = screen.mode
+            self._save_soon()
         for k, value in fx.settings.items():
             self.settings.setdefault(mac, {})[k] = value
         if fx.settings:
@@ -336,7 +359,8 @@ class Hub:
     def _watch(self) -> None:
         """Follow the states of every entity on any remote's screen."""
         root = self.root()
-        wanted = frozenset(e for mac in self.paired() for e in self.screen(mac).visible_entities(root))
+        wanted = frozenset(e for mac in self.paired()
+                           for e in self.screen(mac).visible_entities(root, self.media(mac)))
         if wanted == self._watched:
             return
         if self._unsub_states:

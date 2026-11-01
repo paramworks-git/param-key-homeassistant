@@ -80,7 +80,7 @@ async def main() -> None:
             calls.append((a, dict(call.data)))
         hass.services.async_register("esphome", f"test_bridge_{action}", record)
     # Screen actions as bridge firmware 0.3 has them: *_for twins, one screen per remote.
-    for action in ["show_list", "set_hotkeys", "show_message", "set_config"]:
+    for action in ["show_list", "show_status", "set_hotkeys", "show_message", "set_config"]:
         async def record_screen(call: ServiceCall, a=action) -> None:
             calls.append((a, dict(call.data)))
         hass.services.async_register("esphome", f"test_bridge_{action}_for", record_screen)
@@ -340,6 +340,76 @@ async def main() -> None:
     await asyncio.sleep(0.5)
     await hass.async_block_till_done()
     check("label removed: gone from the menu", "off  Porch" not in screen().get("items", []), screen())
+
+    # --- Media setup (media.py) and modes
+    for domain, service in [("remote", "send_command"), ("media_player", "volume_up"),
+                            ("media_player", "media_play_pause"), ("media_player", "select_source"),
+                            ("media_player", "turn_off")]:
+        async def act2(call: ServiceCall, name=f"{domain}.{service}") -> None:
+            acted.append((name, dict(call.data)))
+        hass.services.async_register(domain, service, act2)
+    hass.states.async_set("media_player.avr", "on", {"friendly_name": "AVR", "volume_level": 0.35, "source": "TV",
+                                                      "source_list": ["TV", "Shield", "Phono"]})
+    hass.states.async_set("media_player.shield", "playing", {"friendly_name": "Shield", "media_title": "Show",
+                                                             "app_name": "Netflix"})
+    ents.async_get_or_create("remote", "androidtv_remote", "shield", suggested_object_id="shield")
+    ents.async_get_or_create("remote", "some_other", "box", suggested_object_id="box")
+    hass.states.async_set("remote.shield", "on", {"friendly_name": "Shield remote"})
+    remote_entry = hass.config_entries.async_entries("param_key")[0]
+    await press("home", "hold")
+    check("home held without Media: says where to set it up",
+          "Set up Media" in (of("show_message")[-1]["message"] if of("show_message") else ""), of("show_message"))
+    r = await hass.config_entries.options.async_init(remote_entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"navigation": "remote.box", "start": "media"})
+    check("unknown navigation platform refused", r.get("errors") == {"navigation": "nav_unsupported"}, r)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {
+        "volume": "media_player.avr", "navigation": "remote.shield", "players": ["media_player.shield"],
+        "hotkeys": ["scene.movie"], "power": ["media_player.avr"], "start": "media"})
+    check("sources step lists the AVR's inputs", r["step_id"] == "sources", r)
+    calls.clear()
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"sources": ["Shield", "TV"]})
+    await hass.async_block_till_done()
+    check("media setup saved", r["type"] == FlowResultType.CREATE_ENTRY
+          and remote_entry.options["media"]["sources"] == ["TV", "Shield"], r)
+    status = of("show_status")[-1] if of("show_status") else {}
+    check("Media screen: playing title, app, volume", status.get("title") == "Show"
+          and status.get("subtitle") == "Netflix" and status.get("value") == 35 and status.get("value_label") == "Vol 35",
+          status)
+    check("Media hotkeys", of("set_hotkeys")[-1]["labels"] == ["Movie", "", "", ""], of("set_hotkeys"))
+    acted.clear()
+    await press("up")
+    await press("ok")
+    await press("home", "tap")
+    await press("vol_up")
+    await press("play")
+    check("Media keys: arrows to the streamer, volume to the AVR, play to the player", acted == [
+        ("remote.send_command", {"entity_id": "remote.shield", "command": "DPAD_UP"}),
+        ("remote.send_command", {"entity_id": "remote.shield", "command": "DPAD_CENTER"}),
+        ("remote.send_command", {"entity_id": "remote.shield", "command": "HOME"}),
+        ("media_player.volume_up", {"entity_id": "media_player.avr"}),
+        ("media_player.media_play_pause", {"entity_id": "media_player.shield"})], acted)
+    await press("settings", "tap")
+    check("Source menu: chosen inputs, current marked", screen().get("items") == ["• TV", "Shield"]
+          and screen()["cursor"] == 0, screen())
+    acted.clear()
+    await press("down")
+    await press("ok")
+    check("OK picks the source", acted == [("media_player.select_source",
+                                            {"entity_id": "media_player.avr", "source": "Shield"})], acted)
+    acted.clear()
+    await press("power", "tap")
+    check("power switches the AVR off", acted == [("media_player.turn_off", {"entity_id": "media_player.avr"})], acted)
+    calls.clear()
+    await press("home", "hold")
+    check("home held: mode picker", screen().get("items") == ["Devices", "Media"] and screen()["cursor"] == 1, screen())
+    await press("up")
+    await press("ok")
+    check("picked Devices: the menus again", screen().get("title") == "Devices", screen())
+    check("mode kept across restarts", hub.modes.get(MAC) == "devices", hub.modes)
+    acted.clear()
+    await press("vol_up")
+    check("volume works in Devices mode too", acted == [("media_player.volume_up", {"entity_id": "media_player.avr"})],
+          acted)
 
     # --- Pairing again: same entry, new key, counters start over
     remote_priv2 = X25519PrivateKey.generate()

@@ -93,9 +93,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
     await hub.provision(entry.data[CONF_REMOTE], entry.data[CONF_KEY])
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_options_updated))
     if hub.owns_screen():
         await hub.draw(entry.data[CONF_REMOTE])
     return True
+
+
+async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Media setup saved: switch to the chosen mode and redraw."""
+    hub = await async_get_hub(hass)
+    await hub.apply_options(entry.data[CONF_REMOTE], entry.options.get("start"))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

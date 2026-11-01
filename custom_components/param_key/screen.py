@@ -1,10 +1,11 @@
-"""One remote's screen in Devices mode: where it is in the menus, and what keys do there.
+"""One remote's screen: its mode (Devices or Media), where it is, and what keys do there.
 
 The screen is a list (docs/protocol.md, packet L): six rows, HA sends the visible window.
 Rows read "state  name", so the state survives when a long name is cut short.
 
 Keys (docs/protocol.md, "Key events"): ▲▼ ◀▶ act on press and repeat, OK and back on press,
-home, settings, power and the hotkeys on tap; a hotkey held shows what it does.
+home, settings, power and the hotkeys on tap; a hotkey held shows what it does, and home held
+picks the mode. With Media set up, volume and the media keys work in every mode (media.py).
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from typing import Any
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, State
 
+from . import media as m
+from .media import MediaConfig
 from .menu import ROWS, RUN_DOMAINS, Menu
 
 SYMBOL_RIGHT = ""  # LVGL's built-in symbol font, in the remote's Montserrat
@@ -23,6 +26,8 @@ TOGGLE_DOMAINS = ("light", "switch", "input_boolean", "fan", "cover", "automatio
 DETAIL_DOMAINS = ("climate", "humidifier")
 STEP_PCT = 10
 MESSAGE_SECONDS = 3
+MODES = ["devices", "media"]
+MODE_LABELS = {"devices": "Devices", "media": "Media"}
 
 # Remote settings (number entities, docs in README): key -> (label, unit, min, max, step, default).
 SETTINGS: dict[str, tuple[str, str, int, int, int, int]] = {
@@ -97,13 +102,21 @@ def tag(state: State | None) -> str:
 
 
 class RemoteScreen:
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, mode: str = "devices") -> None:
         self.hass = hass
+        self.mode = mode if mode in MODES else "devices"
         self.levels: list[Level] = [Level("root")]
         self.detail: str | None = None
         self.detail_cursor = 0
         self.settings_open = False
         self.settings_cursor = 0
+        self.picker_open = False
+        self.picker_cursor = 0
+        self.sources_open = False
+        self.sources_cursor = 0
+
+    def in_media(self, media: MediaConfig | None) -> bool:
+        return self.mode == "media" and media is not None
 
     # --- Where the remote is -------------------------------------------------
 
@@ -127,7 +140,9 @@ class RemoteScreen:
         menu = self.menu(root)
         return menu.items[self.levels[-1].cursor] if menu.items else None
 
-    def visible_entities(self, root: Menu) -> list[str]:
+    def visible_entities(self, root: Menu, media: MediaConfig | None = None) -> list[str]:
+        if self.in_media(media):
+            return [e for e in [media.volume, *media.players, *media.hotkeys] if e]
         if self.detail:
             return [self.detail]
         if self.settings_open:
@@ -139,13 +154,23 @@ class RemoteScreen:
         self.levels = [Level("root")]
         self.detail = None
         self.settings_open = False
+        self.sources_open = False
 
     # --- Drawing -------------------------------------------------------------
 
-    def render(self, root: Menu, settings: dict[str, int]) -> list[Call]:
+    def render(self, root: Menu, settings: dict[str, int], media: MediaConfig | None = None) -> list[Call]:
+        if self.picker_open:
+            labels = [MODE_LABELS[k] for k in MODES]
+            return [_list("Mode", "Choose a mode", labels, self.picker_cursor), _hotkeys([])]
         if self.settings_open:
             rows = [f"{label}  {settings[k]}{unit}" for k, (label, unit, *_) in SETTINGS.items()]
             return [_list("Settings", "Remote settings", rows, self.settings_cursor), _hotkeys([])]
+        if self.in_media(media):
+            if self.sources_open:
+                rows, _ = m.source_rows(self.hass, media)
+                return [_list("Media", "Source", rows, self.sources_cursor), _hotkeys([])]
+            labels = [short_name(self.hass.states.get(e), e, "") for e in media.hotkeys]
+            return [("show_status", m.media_status(self.hass, media)), _hotkeys(labels)]
         if self.detail:
             state = self.hass.states.get(self.detail)
             rows = detail_rows(state)
@@ -175,9 +200,37 @@ class RemoteScreen:
 
     # --- Keys ----------------------------------------------------------------
 
-    def key(self, root: Menu, key: str, event: str, settings: dict[str, int]) -> Effects:
+    def key(self, root: Menu, key: str, event: str, settings: dict[str, int],
+            media: MediaConfig | None = None) -> Effects:
         fx = Effects()
         moving = event in ("press", "repeat")
+        if media is not None and (action := m.global_key(self.hass, media, key, event)):
+            fx.actions.append(action)
+            return fx
+        if key == "home" and event == "hold":
+            if media is None:
+                fx.message = "Set up Media on the remote's page in Home Assistant"
+            else:
+                self.picker_open = not self.picker_open
+                self.picker_cursor = MODES.index(self.mode)
+                fx.redraw = True
+            return fx
+        if self.picker_open:
+            if key in ("up", "down") and moving:
+                self.picker_cursor = max(0, min(self.picker_cursor + (1 if key == "down" else -1), len(MODES) - 1))
+                fx.redraw = True
+            elif key == "ok" and event == "press":
+                self.mode = MODES[self.picker_cursor]
+                self.picker_open = False
+                self.home()
+                fx.redraw = True
+            elif (key == "back" and event == "press") or (key == "home" and event == "tap"):
+                self.picker_open = False
+                fx.redraw = True
+            return fx
+        if self.in_media(media) and not self.settings_open:
+            self._media_key(media, key, event, moving, fx)
+            return fx
         if key == "home" and event == "tap":
             self.home()
             fx.redraw = True
@@ -192,6 +245,48 @@ class RemoteScreen:
         else:
             self._menu_key(root, key, event, moving, fx)
         return fx
+
+    def _media_key(self, media: MediaConfig, key: str, event: str, moving: bool, fx: Effects) -> None:
+        if key == "settings" and event == "tap":
+            if media.sources and media.volume:
+                self.sources_open = not self.sources_open
+                self.sources_cursor = m.source_rows(self.hass, media)[1]
+            else:
+                self.settings_open = True
+            fx.redraw = True
+        elif self.sources_open:
+            if key in ("up", "down") and moving:
+                self.sources_cursor = max(0, min(self.sources_cursor + (1 if key == "down" else -1),
+                                                 len(media.sources) - 1))
+                fx.redraw = True
+            elif key == "ok" and event == "press" and media.sources:
+                fx.actions.append(("media_player", "select_source",
+                                   {"entity_id": media.volume, "source": media.sources[self.sources_cursor]}))
+                self.sources_open = False
+                fx.redraw = True
+            elif key == "back" and event == "press":
+                self.sources_open = False
+                fx.redraw = True
+        elif key in m.NAV_KEYS and media.navigation and (
+            (key in ("up", "down", "left", "right") and moving)
+            or (key in ("ok", "back") and event == "press")
+            or (key == "home" and event == "tap")
+        ):
+            if action := m.nav_action(self.hass, media.navigation, key):
+                fx.actions.append(action)
+        elif key in ("h1", "h2", "h3", "h4"):
+            i = int(key[1]) - 1
+            target = media.hotkeys[i] if i < len(media.hotkeys) else None
+            if event == "tap" and target:
+                self._activate(target, fx)
+            elif event == "hold":
+                state = self.hass.states.get(target) if target else None
+                fx.message = f"Runs {short_name(state, target, '')}" if target else "No hotkey here"
+        elif key == "power" and event == "tap":
+            actions = m.power_actions(self.hass, media)
+            fx.actions += actions
+            if not actions:
+                fx.message = "Choose what power switches on the remote's page in HA"
 
     def _settings_key(self, key: str, event: str, moving: bool, settings: dict[str, int], fx: Effects) -> None:
         if key in ("up", "down") and moving:
