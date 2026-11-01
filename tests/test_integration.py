@@ -235,6 +235,10 @@ async def main() -> None:
     await hass.async_block_till_done()
     check("remove -> forget_remote", of("forget_remote") == [{"remote": MAC}], calls)
 
+    integration = await loader.async_get_integration(hass, "param_key")
+    check("brand icon ships with the integration", integration.has_branding
+          and (Path(integration.file_path) / "brand" / "icon.png").is_file())
+
     # --- A bridge on the network: found by its ESPHome project, then allowed to send events
     matchers = (await loader.async_get_zeroconf(hass)).get("_esphomelib._tcp.local.", [])
     check("zeroconf matches the bridge project", any(
