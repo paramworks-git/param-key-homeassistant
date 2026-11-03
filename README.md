@@ -8,7 +8,7 @@ The remote's firmware, the bridge and the installer are in
 
 Needs Home Assistant 2026.10 or later.
 
-Questions and feedback: the [forum thread](https://community.home-assistant.io/t/param-key-an-esphome-physical-remote-for-home-assistant-with-real-buttons-screen-and-an-ir-for-devices-ha-cannot-control/1031837) or this repository's Issues.
+Questions and feedback: the [forum thread](https://community.home-assistant.io/t/param-key-a-smart-universal-remote-for-home-assistant-esphome-physical-buttons-screen-ir/1031837) or this repository's Issues.
 
 ## Install
 
