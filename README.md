@@ -65,7 +65,8 @@ The remote's screen lists what you labelled `remote`, by Area:
 Thermostats and humidifiers open a detail screen on OK: ▲ ▼ pick mode, target, fan or preset,
 ◀ ▶ change it. Locks, alarms and sensors are shown but not changed from the remote.
 
-Each remote also has **Battery** and **Charging** sensors, and every key press is an
+Each remote also has **Battery**, **Charging** and **Signal strength** sensors (the last message's
+RSSI at the bridge that heard it, with that bridge as the `bridge` attribute), and every key press is an
 `esphome.param_key_key` event (`remote`, `key`, `type`: `press`, `tap`, `hold`, `repeat`), so
 automations can give keys the menus don't use (volume, media keys) a job.
 
@@ -174,7 +175,7 @@ with `remote: test`, `key: vol_up`, `type: press`.
 
 ## Battery logging (YAML package)
 
-The integration's Battery and Charging sensors cover most uses. The package adds a few more.
+The integration's Battery, Charging and Signal strength sensors cover most uses. The package adds a few more.
 The remote sends a hello on every wake and with every battery reading: about 2 s
 after waking, then every 60 s while awake. The package turns it into:
 

@@ -94,6 +94,25 @@ async def async_get_hub(hass: HomeAssistant) -> Hub:
     return hub
 
 
+def _percent(value: Any) -> int | None:
+    """A battery reading from a hello, or None. ESPHome's homeassistant.event sends every value
+    as a string ("68"); a remote that hasn't read its cell yet sends -1."""
+    try:
+        pct = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return pct if 0 <= pct <= 100 else None
+
+
+def _dbm(value: Any) -> int | None:
+    """A frame's RSSI as the bridge measured it (a string from ESPHome), or None."""
+    try:
+        dbm = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return dbm if -120 <= dbm < 0 else None
+
+
 class Hub:
     """Bridges, remotes' radio state, and pairing requests."""
 
@@ -106,6 +125,7 @@ class Hub:
         self._bridge_locks: dict[str, asyncio.Lock] = {}
         self.seen: dict[str, datetime] = {}  # MAC -> last frame
         self.heard_by: dict[str, str] = {}  # MAC -> bridge that heard the last frame
+        self.rssi: dict[str, int] = {}  # MAC -> signal of the last frame at that bridge, dBm
         self.requests: dict[str, PairRequest] = {}
         self.settings: dict[str, dict[str, int]] = {}  # MAC -> remote settings (screen.SETTINGS)
         self.status: dict[str, dict[str, Any]] = {}  # MAC -> battery, charging from its last hello
@@ -228,6 +248,7 @@ class Hub:
         self.counters.pop(mac, None)
         self.seen.pop(mac, None)
         self.heard_by.pop(mac, None)
+        self.rssi.pop(mac, None)
         self.settings.pop(mac, None)
         self.modes.pop(mac, None)
         self.screens.pop(mac, None)
@@ -396,6 +417,8 @@ class Hub:
             return
         self.seen[mac] = dt_util.utcnow()
         self.heard_by[mac] = str(bridge)
+        if (rssi := _dbm(data.get("rssi"))) is not None:
+            self.rssi[mac] = rssi
         try:
             counter = int(counter)
         except (TypeError, ValueError):
@@ -405,9 +428,8 @@ class Hub:
             self._save_soon()
         async_dispatcher_send(self.hass, SIGNAL_REMOTE_SEEN.format(mac))
         if event.event_type == EVENT_HELLO:
-            battery = data.get("battery")
             self.status[mac] = {
-                "battery": int(battery) if isinstance(battery, (int, float)) and 0 <= battery <= 100 else None,
+                "battery": _percent(data.get("battery")),
                 "charging": data.get("charging") in (True, "true", "True", 1),
             }
             async_dispatcher_send(self.hass, SIGNAL_REMOTE_STATUS.format(mac))

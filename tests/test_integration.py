@@ -104,10 +104,11 @@ async def main() -> None:
         shared = remote_priv.exchange(X25519PublicKey.from_public_bytes(ha_public))
         return crypto.derive(shared, raw(remote_priv.public_key()), ha_public, crypto.mac_bytes(mac))
 
-    async def frame(event: str = "key", counter: int | None = 1, mac: str = MAC) -> None:
-        data = {"remote": mac, "key": "ok", "type": "press", "rssi": -50, "battery": 80}
+    async def frame(event: str = "key", counter: int | None = 1, mac: str = MAC, battery: str = "80") -> None:
+        # As ESPHome's homeassistant.event delivers it: every value a string.
+        data = {"remote": mac, "key": "ok", "type": "press", "rssi": "-50", "battery": battery}
         if counter is not None:
-            data.update(counter=counter, bridge=BRIDGE)
+            data.update(counter=str(counter), bridge=BRIDGE)
         hass.bus.async_fire(f"esphome.param_key_{event}", data)
         await hass.async_block_till_done()
 
@@ -164,7 +165,19 @@ async def main() -> None:
         {"brightness": 80, "backlight_seconds": 15, "sleep_seconds": 30, "remote": MAC}], of("set_config"))
     check("counter keeps the highest", hub.counters.get(MAC) == 7, hub.counters)
     battery = er.async_get(hass).async_get_entity_id("sensor", "param_key", f"{MAC}_battery")
-    check("battery from the hello", battery and hass.states.get(battery).state == "80", battery)
+    check("battery from the hello (a string, as ESPHome sends it)",
+          battery and hass.states.get(battery).state == "80", battery)
+    await frame("hello", 5, battery="-1")
+    check("unread battery (-1) keeps the last reading", hass.states.get(battery).state == "80")
+    await frame("hello", 6, battery="n/a")
+    check("garbage battery keeps the last reading", hass.states.get(battery).state == "80")
+    await frame("hello", 7, battery="68")
+    check("next reading replaces it", hass.states.get(battery).state == "68", hass.states.get(battery))
+    signal = er.async_get(hass).async_get_entity_id("sensor", "param_key", f"{MAC}_signal")
+    st = hass.states.get(signal) if signal else None
+    check("signal from the frame, with the bridge that heard it",
+          st and st.state == "-50" and st.attributes.get("bridge") == BRIDGE
+          and st.attributes.get("unit_of_measurement") == "dBm", st)
     hass.services.async_register("script", "param_key_render", lambda call: None)
     hub._sent.clear()
     calls.clear()
